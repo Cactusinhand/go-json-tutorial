@@ -67,6 +67,8 @@
 7. tutorial07: 生成器
 8. tutorial08: 访问与其他功能
 9. tutorial09: 增强的错误处理
+10. tutorial10: JSON指针实现
+11. tutorial11: JSON Schema验证
 
 ## 当前进度
 
@@ -89,6 +91,16 @@
   * 错误恢复能力
   * 自定义解析选项
   * 支持JSON注释
+* 高级数据结构:
+  * JSON指针实现
+  * 支持循环引用检测
+* JSON Schema验证:
+  * 支持类型验证
+  * 数值约束（最小值、最大值、倍数等）
+  * 字符串约束（长度、模式、格式等）
+  * 数组约束（元素数量、唯一性等）
+  * 对象约束（属性数量、必需属性等）
+  * 逻辑组合（allOf、anyOf、oneOf、not）
 
 ## 安装与使用
 
@@ -98,6 +110,10 @@
 import "github.com/Cactusinhand/go-json-tutorial/tutorial08"
 // 或使用增强错误处理版本
 import "github.com/Cactusinhand/go-json-tutorial/tutorial09"
+// 或使用JSON指针功能
+import "github.com/Cactusinhand/go-json-tutorial/tutorial10"
+// 或使用JSON Schema验证功能
+import "github.com/Cactusinhand/go-json-tutorial/tutorial11"
 
 func main() {
     // 基本解析JSON
@@ -140,6 +156,28 @@ func main() {
     
     // 生成JSON字符串
     jsonStr, _ := leptjson.Stringify(newPerson)
+    
+    // 使用JSON指针
+    pointer, _ := leptjson.NewJSONPointer("/users/0/name")
+    if value, err := leptjson.Resolve(&v, pointer); err == nil {
+        userName := leptjson.GetString(value)
+        fmt.Println("用户名：", userName)
+    }
+    
+    // 使用JSON Schema验证
+    schemaJSON := `{
+        "type": "object",
+        "required": ["name", "age"],
+        "properties": {
+            "name": {"type": "string", "minLength": 2},
+            "age": {"type": "integer", "minimum": 18}
+        }
+    }`
+    schema, _ := leptjson.NewJSONSchema(schemaJSON)
+    result := schema.Validate(&v)
+    if !result.Valid {
+        fmt.Println("数据不符合Schema:", result.Errors)
+    }
 }
 ```
 
@@ -177,6 +215,20 @@ func main() {
 * `RemoveObjectValue(&v, index)`: 移除成员
 * `ClearObject(&v)`: 清空对象
 
+### JSON指针
+* `NewJSONPointer(ptr)`: 创建新的JSON指针
+* `Resolve(&v, pointer)`: 解析JSON指针并返回引用的值
+* `Contains(&v, pointer)`: 检查指针是否能解析到值
+* `Add(&v, pointer, value)`: 添加或替换指针引用的值
+* `Remove(&v, pointer)`: 移除指针引用的值
+* `GetTokens(pointer)`: 获取指针的令牌数组
+
+### JSON Schema验证
+* `NewJSONSchema(schemaJSON)`: 创建新的JSON Schema
+* `Validate(&v)`: 验证值是否符合Schema
+* `SchemaValidationResult`: 包含验证结果和错误信息
+* `SchemaValidationError`: 表示具体的验证错误，包含路径和消息
+
 ### 内存和资源管理
 * `Copy(dst, src)`: 深度复制JSON值
 * `Move(dst, src)`: 移动JSON值
@@ -196,7 +248,7 @@ func main() {
 每个章节都包含完整的测试用例，测试覆盖了各种正常和边缘情况。运行测试：
 
 ```bash
-go test ./tutorial08
+go test ./tutorial11
 ```
 
 ## 注意事项
@@ -206,6 +258,7 @@ go test ./tutorial08
 * 字符串解析需要正确处理所有转义序列
 * 数组和对象解析需要处理嵌套和边界情况
 * 在使用动态数组和对象函数时，注意内存管理和资源释放
+* JSON Schema验证仅实现了部分Draft 7规范，用于学习目的
 
 ## 参考资料
 
@@ -213,4 +266,6 @@ go test ./tutorial08
 * [原始C语言教程](https://github.com/miloyip/json-tutorial)
 * [RFC 7159: The JavaScript Object Notation (JSON) Data Interchange Format](https://tools.ietf.org/html/rfc7159)
 * [RFC 3629: UTF-8, a transformation format of ISO 10646](https://tools.ietf.org/html/rfc3629)
+* [RFC 6901: JavaScript Object Notation (JSON) Pointer](https://tools.ietf.org/html/rfc6901)
+* [JSON Schema Draft 7](https://json-schema.org/specification-links.html#draft-7)
 ```
