@@ -42,7 +42,7 @@
 6. tutorial06: 解析对象
 7. tutorial07: 生成器
 8. tutorial08: 访问与其他功能
-9. tutorial09: 增强的错误处理(未完成)
+9. tutorial09: 增强的错误处理
 
 ## 当前进度
 
@@ -60,7 +60,11 @@
   * 深度复制、移动和交换
   * 动态数组和对象操作
   * 高效内存管理
-
+* 增强错误处理:
+  * 详细的错误信息与位置
+  * 错误恢复能力
+  * 自定义解析选项
+  * 支持JSON注释
 
 ## 安装与使用
 
@@ -149,6 +153,11 @@ func main() {
 * `RemoveObjectValue(&v, index)`: 移除成员
 * `ClearObject(&v)`: 清空对象
 
+### 内存和资源管理
+* `Copy(dst, src)`: 深度复制JSON值
+* `Move(dst, src)`: 移动JSON值
+* `Swap(lhs, rhs)`: 交换两个JSON值
+* `Free(&v)`: 释放资源
 
 ### 比较和其他
 * `Equal(lhs, rhs)`: 比较两个JSON值是否相等
