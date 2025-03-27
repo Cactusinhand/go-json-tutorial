@@ -69,6 +69,7 @@
 9. tutorial09: 增强的错误处理
 10. tutorial10: JSON指针实现
 11. tutorial11: JSON Schema验证
+12. tutorial12: JSON Path实现
 
 ## 当前进度
 
@@ -101,6 +102,11 @@
   * 数组约束（元素数量、唯一性等）
   * 对象约束（属性数量、必需属性等）
   * 逻辑组合（allOf、anyOf、oneOf、not）
+* JSON Path实现:
+  * 支持属性访问和数组索引
+  * 支持递归下降和通配符
+  * 支持数组切片操作
+  * 提供便捷的查询API
 
 ## 安装与使用
 
@@ -114,6 +120,8 @@ import "github.com/Cactusinhand/go-json-tutorial/tutorial09"
 import "github.com/Cactusinhand/go-json-tutorial/tutorial10"
 // 或使用JSON Schema验证功能
 import "github.com/Cactusinhand/go-json-tutorial/tutorial11"
+// 或使用JSON Path查询功能
+import "github.com/Cactusinhand/go-json-tutorial/tutorial12"
 
 func main() {
     // 基本解析JSON
@@ -178,6 +186,36 @@ func main() {
     if !result.Valid {
         fmt.Println("数据不符合Schema:", result.Errors)
     }
+    
+    // 使用JSON Path查询
+    // 查询所有书籍的作者
+    doc := &leptjson.Value{} // 假设这是一个包含书籍信息的JSON
+    leptjson.Parse(doc, `{
+        "store": {
+            "book": [
+                {"category": "reference", "author": "Nigel Rees", "title": "Sayings of the Century"},
+                {"category": "fiction", "author": "Evelyn Waugh", "title": "Sword of Honour"}
+            ]
+        }
+    }`)
+    
+    // 方法1：使用JSONPath对象
+    path, _ := leptjson.NewJSONPath("$.store.book[*].author")
+    authors, _ := path.Query(doc)
+    for _, author := range authors {
+        fmt.Println("作者:", leptjson.GetString(author))
+    }
+    
+    // 方法2：使用便捷函数
+    allPrices, _ := leptjson.QueryString(doc, "$..price")
+    fmt.Println("找到", len(allPrices), "个价格")
+    
+    // 获取单个结果
+    firstBook, _ := leptjson.QueryOneString(doc, "$.store.book[0]")
+    if firstBook != nil {
+        bookTitle := leptjson.GetString(leptjson.GetObjectValueByKey(firstBook, "title"))
+        fmt.Println("第一本书:", bookTitle)
+    }
 }
 ```
 
@@ -229,6 +267,13 @@ func main() {
 * `SchemaValidationResult`: 包含验证结果和错误信息
 * `SchemaValidationError`: 表示具体的验证错误，包含路径和消息
 
+### JSON Path查询
+* `NewJSONPath(path)`: 创建新的JSON Path查询对象
+* `Query(doc)`: 使用路径表达式查询JSON文档
+* `QueryOne(doc)`: 返回第一个匹配的值
+* `QueryString(doc, path)`: 便捷函数，直接使用路径字符串查询
+* `QueryOneString(doc, path)`: 便捷函数，返回第一个匹配值
+
 ### 内存和资源管理
 * `Copy(dst, src)`: 深度复制JSON值
 * `Move(dst, src)`: 移动JSON值
@@ -248,7 +293,7 @@ func main() {
 每个章节都包含完整的测试用例，测试覆盖了各种正常和边缘情况。运行测试：
 
 ```bash
-go test ./tutorial11
+go test ./tutorial12
 ```
 
 ## 注意事项
@@ -259,6 +304,7 @@ go test ./tutorial11
 * 数组和对象解析需要处理嵌套和边界情况
 * 在使用动态数组和对象函数时，注意内存管理和资源释放
 * JSON Schema验证仅实现了部分Draft 7规范，用于学习目的
+* JSON Path实现不支持过滤表达式和脚本表达式
 
 ## 参考资料
 
@@ -268,4 +314,4 @@ go test ./tutorial11
 * [RFC 3629: UTF-8, a transformation format of ISO 10646](https://tools.ietf.org/html/rfc3629)
 * [RFC 6901: JavaScript Object Notation (JSON) Pointer](https://tools.ietf.org/html/rfc6901)
 * [JSON Schema Draft 7](https://json-schema.org/specification-links.html#draft-7)
-```
+* [Stefan Goessner的JSONPath文章](https://goessner.net/articles/JsonPath/)
