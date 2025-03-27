@@ -70,6 +70,8 @@
 10. tutorial10: JSON指针实现
 11. tutorial11: JSON Schema验证
 12. tutorial12: JSON Path实现
+13. tutorial13: JSON Patch实现
+14. tutorial14: JSON Merge Patch实现
 
 ## 当前进度
 
@@ -107,6 +109,14 @@
   * 支持递归下降和通配符
   * 支持数组切片操作
   * 提供便捷的查询API
+* JSON Patch实现:
+  * 支持RFC 6902中定义的所有操作（add、remove、replace、move、copy、test）
+  * 可以从两个JSON文档生成Patch
+  * 优雅处理复杂的JSON文档修改
+* JSON Merge Patch实现:
+  * 支持RFC 7396中定义的合并补丁操作
+  * 提供更简单直观的JSON文档修改方式
+  * 完全兼容HTTP PATCH操作
 
 ## 安装与使用
 
@@ -122,6 +132,10 @@ import "github.com/Cactusinhand/go-json-tutorial/tutorial10"
 import "github.com/Cactusinhand/go-json-tutorial/tutorial11"
 // 或使用JSON Path查询功能
 import "github.com/Cactusinhand/go-json-tutorial/tutorial12"
+// 或使用JSON Patch功能
+import "github.com/Cactusinhand/go-json-tutorial/tutorial13"
+// 或使用JSON Merge Patch功能
+import "github.com/Cactusinhand/go-json-tutorial/tutorial14"
 
 func main() {
     // 基本解析JSON
@@ -216,6 +230,73 @@ func main() {
         bookTitle := leptjson.GetString(leptjson.GetObjectValueByKey(firstBook, "title"))
         fmt.Println("第一本书:", bookTitle)
     }
+    
+    // 使用JSON Patch
+    // 创建一个JSON Patch
+    patchJSON := `[
+        {"op": "add", "path": "/user/name", "value": "John Doe"},
+        {"op": "remove", "path": "/old_field"},
+        {"op": "replace", "path": "/status", "value": "active"}
+    ]`
+    
+    // 方法1：解析并应用Patch
+    document := map[string]interface{}{
+        "status": "pending",
+        "old_field": "to be removed"
+    }
+    
+    patch, _ := tutorial13.NewJSONPatch(patchJSON)
+    resultDoc, _ := patch.Apply(document)
+    
+    // 方法2：生成两个文档之间的差异Patch
+    source := map[string]interface{}{"a": 1, "b": 2}
+    target := map[string]interface{}{"a": 1, "c": 3}
+    
+    diffPatch, _ := tutorial13.CreatePatch(source, target)
+    patchStr, _ := diffPatch.String()
+    fmt.Println("生成的Patch:", patchStr)
+    // 输出: [{"op":"remove","path":"/b"},{"op":"add","path":"/c","value":3}]
+    
+    // 使用JSON Merge Patch
+    // 创建一个Merge Patch
+    mergePatchJSON := `{
+        "title": "更新的标题",
+        "author": {"email": null},
+        "tags": ["news", "updated"],
+        "content": "新内容"
+    }`
+    
+    originalDoc := map[string]interface{}{
+        "title": "原标题",
+        "author": {
+            "name": "作者名",
+            "email": "author@example.com"
+        },
+        "tags": ["original"],
+        "published": true
+    }
+    
+    // 方法1：解析并应用Merge Patch
+    var mergePatchObj interface{}
+    tutorial14.Unmarshal([]byte(mergePatchJSON), &mergePatchObj)
+    
+    patch, _ := tutorial14.NewJSONMergePatch(mergePatchObj)
+    updatedDoc, _ := patch.Apply(originalDoc)
+    
+    // 方法2：从两个文档生成Merge Patch
+    sourceMerge := map[string]interface{}{
+        "a": 1,
+        "b": {"c": 3}
+    }
+    targetMerge := map[string]interface{}{
+        "a": 1,
+        "b": {"d": 4}
+    }
+    
+    mergePatch, _ := tutorial14.CreateMergePatch(sourceMerge, targetMerge)
+    mergePatchStr, _ := mergePatch.String()
+    fmt.Println("生成的Merge Patch:", mergePatchStr)
+    // 输出: {"b":{"c":null,"d":4}}
 }
 ```
 
@@ -293,7 +374,7 @@ func main() {
 每个章节都包含完整的测试用例，测试覆盖了各种正常和边缘情况。运行测试：
 
 ```bash
-go test ./tutorial12
+go test ./tutorial14
 ```
 
 ## 注意事项

@@ -70,11 +70,11 @@
 4. 功能扩展（已完成✅）
    - JSON Path 支持：实现类似 XPath 的查询语言，方便从复杂 JSON 结构中提取数据
 
-5. 功能拓展(下一步优先)
-   - JSON Patch 操作：实现 RFC 6902 的 JSON Patch 标准，支持增量修改
-   - JSON Merge Patch：实现 RFC 7396 的 JSON Merge Patch 标准，提供更简单的更新方式
+5. 功能拓展
+   - JSON Patch 操作：实现 RFC 6902 的 JSON Patch 标准，支持增量修改（已完成✅）
+   - JSON Merge Patch：实现 RFC 7396 的 JSON Merge Patch 标准，提供更简单的更新方式（已完成✅）
 
-6. 工具与集成（计划中）
+6. 工具与集成（下一步优先）
    - 提供命令行工具进行 JSON 格式化、验证和转换
    - 支持 struct tag 映射，自动转换 Go 结构体与 JSON
 
