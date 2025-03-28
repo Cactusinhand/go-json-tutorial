@@ -1,0 +1,27 @@
+{
+  "name": "张三",
+  "age": 30,
+  "isMarried": false,
+  "hobbies": ["阅读", "旅行", "编程"],
+  "address": {
+    "city": "北京",
+    "street": "中关村大街",
+    "zipcode": "100080"
+  },
+  "contact": {
+    "email": "zhangsan@example.com",
+    "phone": "+86 123 4567 8901"
+  },
+  "projects": [
+    {
+      "name": "项目A",
+      "role": "项目经理",
+      "duration": 12
+    },
+    {
+      "name": "项目B",
+      "role": "开发工程师",
+      "duration": 6
+    }
+  ]
+} 
