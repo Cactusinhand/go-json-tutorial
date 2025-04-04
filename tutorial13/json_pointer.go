@@ -1,4 +1,4 @@
-// JSON Pointer 实现 (RFC 6901)
+// json_pointer.go - JSON指针实现 (RFC6901)
 package leptjson
 
 import (
@@ -7,353 +7,336 @@ import (
 	"strings"
 )
 
-// JSONPointer 表示一个 JSON Pointer (RFC 6901)
+// JSONPointerError 表示JSON指针相关错误
+type JSONPointerError int
+
+// JSON指针错误常量
+const (
+	POINTER_OK JSONPointerError = iota
+	POINTER_INVALID_FORMAT
+	POINTER_INDEX_OUT_OF_RANGE
+	POINTER_KEY_NOT_FOUND
+	POINTER_INVALID_TARGET
+)
+
+// JSONPointer 表示一个JSON指针（RFC6901）
 type JSONPointer struct {
-	Tokens []string // 路径中的令牌，例如 "/foo/bar" 会被分解为 ["foo", "bar"]
+	tokens []string // 路径令牌
 }
 
-// PointerError 表示处理 JSON Pointer 时出现的错误
-type PointerError struct {
-	Path    string // 出错的路径
-	Message string // 错误消息
+// 实现 Error 接口
+func (e JSONPointerError) Error() string {
+	switch e {
+	case POINTER_OK:
+		return "JSON指针操作成功"
+	case POINTER_INVALID_FORMAT:
+		return "无效的JSON指针格式"
+	case POINTER_INDEX_OUT_OF_RANGE:
+		return "数组索引超出范围"
+	case POINTER_KEY_NOT_FOUND:
+		return "对象中未找到指定的键"
+	case POINTER_INVALID_TARGET:
+		return "无效的目标类型"
+	default:
+		return "未知的JSON指针错误"
+	}
 }
 
-// Error 实现 error 接口
-func (e *PointerError) Error() string {
-	return fmt.Sprintf("JSON Pointer 错误 (%s): %s", e.Path, e.Message)
-}
-
-// NewJSONPointer 从字符串创建 JSON Pointer
-func NewJSONPointer(path string) (*JSONPointer, error) {
-	// 检查是否为空路径，表示整个文档
-	if path == "" {
-		return &JSONPointer{Tokens: []string{}}, nil
+// ParseJSONPointer 解析JSON指针字符串
+// 例如: "/foo/0/bar" => ["foo", "0", "bar"]
+func ParseJSONPointer(pointer string) (*JSONPointer, JSONPointerError) {
+	// 空字符串表示整个文档
+	if pointer == "" {
+		return &JSONPointer{tokens: []string{}}, POINTER_OK
 	}
 
-	// 检查是否以 '/' 开头
-	if !strings.HasPrefix(path, "/") {
-		return nil, &PointerError{
-			Path:    path,
-			Message: "JSON Pointer 必须以 '/' 开头",
-		}
-	}
-
-	// 如果路径只是 "/"，则表示根文档
-	if path == "/" {
-		// 特殊处理根路径
-		return &JSONPointer{Tokens: []string{""}}, nil
+	// 必须以 '/' 开头
+	if !strings.HasPrefix(pointer, "/") {
+		return nil, POINTER_INVALID_FORMAT
 	}
 
 	// 分割路径
-	parts := strings.Split(path, "/")
-	// 移除第一个空元素 (由于 /foo/bar 分割后第一个元素为空)
-	parts = parts[1:]
-
-	// 反向转义每个部分
+	parts := strings.Split(pointer[1:], "/")
 	tokens := make([]string, len(parts))
+
+	// 处理转义字符
 	for i, part := range parts {
-		tokens[i] = unescapeReferenceToken(part)
+		// 转义处理: ~1 => /, ~0 => ~
+		unescaped := strings.ReplaceAll(part, "~1", "/")
+		unescaped = strings.ReplaceAll(unescaped, "~0", "~")
+		tokens[i] = unescaped
 	}
 
-	return &JSONPointer{Tokens: tokens}, nil
+	return &JSONPointer{tokens: tokens}, POINTER_OK
 }
 
-// Resolve 解析 JSON Pointer 指向的值
-func Resolve(doc *Value, pointer *JSONPointer) (*Value, error) {
-	// 空路径表示整个文档
-	if len(pointer.Tokens) == 0 {
-		return doc, nil
+// Get 根据JSON指针获取值
+func (p *JSONPointer) Get(root *Value) (*Value, JSONPointerError) {
+	// 空指针直接返回根节点
+	if len(p.tokens) == 0 {
+		return root, POINTER_OK
 	}
 
-	// 如果只有一个令牌且为空字符串，表示根路径 "/"
-	if len(pointer.Tokens) == 1 && pointer.Tokens[0] == "" {
-		return doc, nil
-	}
+	current := root
+	for _, token := range p.tokens {
+		switch current.Type {
+		case ARRAY:
+			// 对于数组，token 必须是有效索引
+			index, err := strconv.Atoi(token)
+			if err != nil || index < 0 || index >= len(current.A) {
+				return nil, POINTER_INDEX_OUT_OF_RANGE
+			}
+			current = current.A[index]
 
-	current := doc
-	for i, token := range pointer.Tokens {
-		// 跳过表示根路径的空字符串
-		if i == 0 && token == "" {
-			continue
-		}
-
-		// 构建当前路径用于错误消息
-		currentPath := "/" + strings.Join(pointer.Tokens[:i+1], "/")
-
-		// 处理对象
-		if current.Type == OBJECT {
+		case OBJECT:
+			// 对于对象，查找匹配的键
 			found := false
-			for _, m := range current.M {
-				if m.K == token {
-					current = m.V
+			for _, member := range current.O {
+				if member.K == token {
+					current = member.V
 					found = true
 					break
 				}
 			}
 			if !found {
-				return nil, &PointerError{
-					Path:    currentPath,
-					Message: fmt.Sprintf("对象中不存在键 '%s'", token),
-				}
-			}
-		} else if current.Type == ARRAY {
-			// 处理数组
-			index, err := parseArrayIndex(token)
-			if err != nil {
-				return nil, &PointerError{
-					Path:    currentPath,
-					Message: fmt.Sprintf("无效的数组索引: %v", err),
-				}
+				return nil, POINTER_KEY_NOT_FOUND
 			}
 
-			// 检查索引是否在范围内
-			if index < 0 || index >= len(current.A) {
-				return nil, &PointerError{
-					Path:    currentPath,
-					Message: fmt.Sprintf("数组索引 %d 超出范围 (0-%d)", index, len(current.A)-1),
-				}
-			}
-
-			current = current.A[index]
-		} else {
-			// 对于不是对象或数组的值，无法继续解析
-			return nil, &PointerError{
-				Path:    currentPath,
-				Message: fmt.Sprintf("无法对类型 %s 使用 JSON Pointer", GetTypeStr(current.Type)),
-			}
+		default:
+			// 其他类型无法继续遍历
+			return nil, POINTER_INVALID_TARGET
 		}
 	}
 
-	return current, nil
+	return current, POINTER_OK
 }
 
-// Add 添加或替换值到指定路径
-func Add(doc *Value, pointer *JSONPointer, value *Value) error {
-	// 空路径或根路径 "/" 表示替换整个文档
-	if len(pointer.Tokens) == 0 || (len(pointer.Tokens) == 1 && pointer.Tokens[0] == "") {
-		// 复制值，替换整个文档
-		Copy(doc, value)
-		return nil
+// Replace 根据JSON指针替换现有值或添加对象成员
+// 注意：对于数组，此方法执行替换，不执行插入。
+func (p *JSONPointer) Replace(root *Value, value *Value) JSONPointerError {
+	// 特殊情况：空指针，替换整个文档
+	if len(p.tokens) == 0 {
+		Copy(root, value)
+		return POINTER_OK
 	}
 
-	// 获取父节点
-	parentTokens := make([]string, 0)
-	lastTokenIndex := len(pointer.Tokens) - 1
-
-	// 处理父路径可能包含空字符串的情况
-	for i, token := range pointer.Tokens[:lastTokenIndex] {
-		if i == 0 && token == "" {
-			// 跳过根路径标记
-			continue
-		}
-		parentTokens = append(parentTokens, token)
-	}
-
-	parentPointer := &JSONPointer{Tokens: parentTokens}
-
-	parent, err := Resolve(doc, parentPointer)
-	if err != nil {
+	parent, err := p.getParent(root)
+	if err != POINTER_OK {
 		return err
 	}
 
-	// 获取最后一个令牌，用于添加或替换
-	lastToken := pointer.Tokens[lastTokenIndex]
+	lastToken := p.tokens[len(p.tokens)-1]
 
-	// 处理父节点是对象的情况
-	if parent.Type == OBJECT {
-		// 查找是否已存在该键
-		for _, m := range parent.M {
-			if m.K == lastToken {
+	switch parent.Type {
+	case ARRAY:
+		index, parseErr := strconv.Atoi(lastToken)
+		// 对于替换，索引必须在现有范围内
+		if parseErr != nil || index < 0 || index >= len(parent.A) {
+			return POINTER_INDEX_OUT_OF_RANGE
+		}
+
+		// 创建新值的副本
+		newValue := &Value{}
+		Copy(newValue, value)
+
+		// 替换逻辑：Free 旧值，赋新值
+		Free(parent.A[index])
+		parent.A[index] = newValue
+
+	case OBJECT:
+		// 查找对象成员
+		for i, member := range parent.O {
+			if member.K == lastToken {
 				// 替换现有值
-				Copy(m.V, value)
-				return nil
+				Copy(parent.O[i].V, value)
+				return POINTER_OK
 			}
 		}
 
-		// 添加新键值对
-		newMember := &Member{
-			K: lastToken,
-			V: &Value{},
+		// 键不存在？对于 Replace 操作，这应该是一个错误吗？
+		// RFC 6902 的 replace 操作要求目标必须存在。
+		// 但 Set 的原始行为是添加新键，我们暂时保留这个行为。
+		// 如果严格按照 Replace 语义，这里应该返回 POINTER_KEY_NOT_FOUND
+		// 为了兼容之前的 Set 行为（被 move/copy 使用），我们允许添加。
+		newValue := &Value{}
+		Copy(newValue, value)
+		if len(parent.O) == cap(parent.O) {
+			ReserveObject(parent, len(parent.O)+1)
 		}
-		Copy(newMember.V, value)
-		parent.M = append(parent.M, newMember)
-	} else if parent.Type == ARRAY {
-		// 处理父节点是数组的情况
-		// 特殊情况: "-" 表示添加到数组末尾
-		if lastToken == "-" {
-			newElem := &Value{}
-			Copy(newElem, value)
-			parent.A = append(parent.A, newElem)
-			return nil
-		}
+		parent.O = append(parent.O, Member{K: lastToken, V: newValue})
 
-		// 解析数组索引
-		index, err := parseArrayIndex(lastToken)
-		if err != nil {
-			return &PointerError{
-				Path:    "/" + strings.Join(pointer.Tokens, "/"),
-				Message: fmt.Sprintf("无效的数组索引: %v", err),
-			}
-		}
-
-		// 检查索引是否在范围内 (允许等于数组长度，表示追加)
-		if index < 0 || index > len(parent.A) {
-			return &PointerError{
-				Path:    "/" + strings.Join(pointer.Tokens, "/"),
-				Message: fmt.Sprintf("数组索引 %d 超出范围 (0-%d)", index, len(parent.A)),
-			}
-		}
-
-		// 在索引处插入元素
-		if index == len(parent.A) {
-			// 追加到末尾
-			newElem := &Value{}
-			Copy(newElem, value)
-			parent.A = append(parent.A, newElem)
-		} else {
-			// 在中间插入
-			newElem := &Value{}
-			Copy(newElem, value)
-			parent.A = append(parent.A[:index+1], parent.A[index:]...)
-			parent.A[index] = newElem
-		}
-	} else {
-		// 父节点既不是对象也不是数组，无法添加子元素
-		return &PointerError{
-			Path:    "/" + strings.Join(parentTokens, "/"),
-			Message: fmt.Sprintf("无法向类型 %s 添加元素", GetTypeStr(parent.Type)),
-		}
+	default:
+		return POINTER_INVALID_TARGET
 	}
 
-	return nil
+	return POINTER_OK
 }
 
-// Remove 删除指定路径的值
-func Remove(doc *Value, pointer *JSONPointer) error {
-	// 空路径无法删除 (不能删除整个文档)
-	if len(pointer.Tokens) == 0 {
-		return &PointerError{
-			Path:    "",
-			Message: "无法删除整个文档",
-		}
+// Insert 根据JSON指针在数组中插入值或在对象中添加/替换值
+// 对于数组，支持索引插入和末尾追加 ("-")
+func (p *JSONPointer) Insert(root *Value, value *Value) JSONPointerError {
+	// 不能向根插入 (除非是对象且键已存在，但这更像是替换)
+	if len(p.tokens) == 0 {
+		// 也许允许替换根？但语义上更像是 Replace。
+		// 暂时不允许插入根。
+		return POINTER_INVALID_TARGET
 	}
 
-	// 获取父节点
-	parentTokens := pointer.Tokens[:len(pointer.Tokens)-1]
-	parentPointer := &JSONPointer{Tokens: parentTokens}
-
-	parent, err := Resolve(doc, parentPointer)
-	if err != nil {
+	parent, err := p.getParent(root)
+	if err != POINTER_OK {
 		return err
 	}
 
-	// 获取最后一个令牌，用于删除
-	lastToken := pointer.Tokens[len(pointer.Tokens)-1]
+	lastToken := p.tokens[len(p.tokens)-1]
 
-	// 处理父节点是对象的情况
-	if parent.Type == OBJECT {
-		// 查找要删除的键
-		for i, m := range parent.M {
-			if m.K == lastToken {
-				// 删除该成员
-				parent.M = append(parent.M[:i], parent.M[i+1:]...)
-				return nil
+	switch parent.Type {
+	case ARRAY:
+		indexStr := lastToken
+		isAppend := (lastToken == "-")
+		var index int
+		var parseErr error
+
+		if !isAppend {
+			index, parseErr = strconv.Atoi(indexStr)
+			if parseErr != nil || index < 0 {
+				return POINTER_INDEX_OUT_OF_RANGE
+			}
+			// 插入索引不能超过当前数组长度
+			if index > len(parent.A) {
+				return POINTER_INDEX_OUT_OF_RANGE
 			}
 		}
 
-		// 找不到要删除的键
-		return &PointerError{
-			Path:    "/" + strings.Join(pointer.Tokens, "/"),
-			Message: fmt.Sprintf("对象中不存在键 '%s'", lastToken),
-		}
-	} else if parent.Type == ARRAY {
-		// 处理父节点是数组的情况
-		// 特殊情况: "-" 不能用于删除
-		if lastToken == "-" {
-			return &PointerError{
-				Path:    "/" + strings.Join(pointer.Tokens, "/"),
-				Message: "不能使用 '-' 来删除数组元素",
+		newValue := &Value{}
+		Copy(newValue, value)
+
+		if isAppend || index == len(parent.A) { // 追加或在末尾添加
+			if len(parent.A) == cap(parent.A) {
+				ReserveArray(parent, len(parent.A)+1)
 			}
+			parent.A = append(parent.A, newValue)
+		} else { // 在中间插入 index < len(parent.A)
+			// 使用 append 实现插入
+			if len(parent.A) == cap(parent.A) {
+				ReserveArray(parent, len(parent.A)+1)
+			}
+			parent.A = append(parent.A[:index], append([]*Value{newValue}, parent.A[index:]...)...)
 		}
 
-		// 解析数组索引
-		index, err := parseArrayIndex(lastToken)
-		if err != nil {
-			return &PointerError{
-				Path:    "/" + strings.Join(pointer.Tokens, "/"),
-				Message: fmt.Sprintf("无效的数组索引: %v", err),
+	case OBJECT:
+		// 对于对象，Insert 和 Replace 的行为通常相同：替换或添加
+		// 我们可以直接调用 Replace 或复制其逻辑
+		for i, member := range parent.O {
+			if member.K == lastToken {
+				Copy(parent.O[i].V, value)
+				return POINTER_OK
 			}
 		}
-
-		// 检查索引是否在范围内
-		if index < 0 || index >= len(parent.A) {
-			return &PointerError{
-				Path:    "/" + strings.Join(pointer.Tokens, "/"),
-				Message: fmt.Sprintf("数组索引 %d 超出范围 (0-%d)", index, len(parent.A)-1),
-			}
+		newValue := &Value{}
+		Copy(newValue, value)
+		if len(parent.O) == cap(parent.O) {
+			ReserveObject(parent, len(parent.O)+1)
 		}
+		parent.O = append(parent.O, Member{K: lastToken, V: newValue})
 
+	default:
+		return POINTER_INVALID_TARGET
+	}
+	return POINTER_OK
+}
+
+// Remove 根据JSON指针删除值
+func (p *JSONPointer) Remove(root *Value) JSONPointerError {
+	// 不能删除根节点
+	if len(p.tokens) == 0 {
+		return POINTER_INVALID_TARGET
+	}
+
+	parent, err := p.getParent(root)
+	if err != POINTER_OK {
+		return err
+	}
+
+	lastToken := p.tokens[len(p.tokens)-1]
+
+	switch parent.Type {
+	case ARRAY:
+		index, err := strconv.Atoi(lastToken)
+		if err != nil || index < 0 || index >= len(parent.A) {
+			return POINTER_INDEX_OUT_OF_RANGE
+		}
 		// 删除数组元素
-		parent.A = append(parent.A[:index], parent.A[index+1:]...)
-	} else {
-		// 父节点既不是对象也不是数组，无法删除子元素
-		return &PointerError{
-			Path:    "/" + strings.Join(parentTokens, "/"),
-			Message: fmt.Sprintf("无法从类型 %s 删除元素", GetTypeStr(parent.Type)),
+		EraseArrayElement(parent, index, 1)
+
+	case OBJECT:
+		// 查找对象成员索引
+		for i, member := range parent.O {
+			if member.K == lastToken {
+				// 删除成员
+				RemoveObjectValue(parent, i)
+				return POINTER_OK
+			}
 		}
+		return POINTER_KEY_NOT_FOUND
+
+	default:
+		return POINTER_INVALID_TARGET
 	}
 
-	return nil
+	return POINTER_OK
 }
 
-// parseArrayIndex 解析数组索引
-func parseArrayIndex(token string) (int, error) {
-	// 检查是否有前导零
-	if len(token) > 1 && token[0] == '0' {
-		return 0, fmt.Errorf("数组索引不能有前导零")
+// 获取指针路径上的倒数第二个节点（父节点）
+func (p *JSONPointer) getParent(root *Value) (*Value, JSONPointerError) {
+	if len(p.tokens) <= 0 {
+		return nil, POINTER_INVALID_FORMAT
 	}
 
-	// 尝试解析为整数
-	index, err := strconv.Atoi(token)
-	if err != nil {
-		return 0, fmt.Errorf("无效的数组索引: %v", err)
+	// 如果只有一个token，父节点就是根节点
+	if len(p.tokens) == 1 {
+		return root, POINTER_OK
 	}
 
-	// 检查是否为非负数
-	if index < 0 {
-		return 0, fmt.Errorf("数组索引不能为负数")
+	// 创建一个不包含最后一个token的指针
+	parentPointer := &JSONPointer{
+		tokens: p.tokens[:len(p.tokens)-1],
 	}
 
-	return index, nil
+	return parentPointer.Get(root)
 }
 
-// unescapeReferenceToken 反转义 JSON Pointer 中的引用令牌
-func unescapeReferenceToken(token string) string {
-	// 替换转义序列
-	token = strings.ReplaceAll(token, "~1", "/")
-	token = strings.ReplaceAll(token, "~0", "~")
-	return token
-}
-
-// escapeReferenceToken 转义 JSON Pointer 中的引用令牌
-func escapeReferenceToken(token string) string {
-	// 替换转义序列 (注意顺序很重要，先替换 ~，避免二次转义)
-	token = strings.ReplaceAll(token, "~", "~0")
-	token = strings.ReplaceAll(token, "/", "~1")
-	return token
-}
-
-// String 返回 JSON Pointer 的字符串表示
+// 创建一个JSON指针字符串表示
 func (p *JSONPointer) String() string {
-	if len(p.Tokens) == 0 {
+	if len(p.tokens) == 0 {
 		return ""
 	}
 
-	// 转义并连接所有令牌
-	escapedTokens := make([]string, len(p.Tokens))
-	for i, token := range p.Tokens {
-		escapedTokens[i] = escapeReferenceToken(token)
+	var parts []string
+	for _, token := range p.tokens {
+		// 转义处理: ~ => ~0, / => ~1
+		escaped := strings.ReplaceAll(token, "~", "~0")
+		escaped = strings.ReplaceAll(escaped, "/", "~1")
+		parts = append(parts, escaped)
 	}
 
-	return "/" + strings.Join(escapedTokens, "/")
+	return "/" + strings.Join(parts, "/")
+}
+
+// GetJSONPointer 创建一个指向指定路径的JSONPointer
+// 例如: NewJSONPointer("foo", 0, "bar") => "/foo/0/bar"
+func GetJSONPointer(segments ...interface{}) (*JSONPointer, error) {
+	tokens := make([]string, len(segments))
+
+	for i, segment := range segments {
+		switch v := segment.(type) {
+		case string:
+			tokens[i] = v
+		case int:
+			tokens[i] = strconv.Itoa(v)
+		default:
+			return nil, fmt.Errorf("不支持的路径段类型: %T", segment)
+		}
+	}
+
+	return &JSONPointer{tokens: tokens}, nil
 }

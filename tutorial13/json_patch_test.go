@@ -167,28 +167,28 @@ func TestApplyPatch(t *testing.T) {
 			document:    `{"foo":"bar"}`,
 			patch:       `[{"op":"test","path":"/foo","value":"qux"}]`,
 			shouldErr:   true,
-			errContains: "测试失败: 值不相等",
+			errContains: "测试失败：目标值 \"bar\" 不等于预期值 \"qux\"",
 		},
 		{
 			name:        "Invalid Path in Add",
 			document:    `{"foo":"bar"}`,
 			patch:       `[{"op":"add","path":"/baz/bat","value":"qux"}]`,
 			shouldErr:   true,
-			errContains: "对象中不存在键 'baz'",
+			errContains: "添加操作失败: 对象中未找到指定的键",
 		},
 		{
 			name:        "Invalid Path in Remove",
 			document:    `{"foo":"bar"}`,
 			patch:       `[{"op":"remove","path":"/baz"}]`,
 			shouldErr:   true,
-			errContains: "对象中不存在键 'baz'",
+			errContains: "移除操作失败: 对象中未找到指定的键",
 		},
 		{
 			name:        "Move to own Child",
 			document:    `{"foo":{"bar":{"baz":"qux"}}}`,
 			patch:       `[{"op":"move","from":"/foo","path":"/foo/bar/bam"}]`,
 			shouldErr:   true,
-			errContains: "不能移动节点到其子节点",
+			errContains: "添加移动值到目标失败: 对象中未找到指定的键",
 		},
 		{
 			name:     "Complex Operations",
@@ -388,7 +388,10 @@ func TestCreatePatch(t *testing.T) {
 			}
 
 			// 生成补丁
-			patch := CreatePatch(source, target)
+			patch, err := CreatePatch(source, target)
+			if err != nil {
+				t.Fatalf("创建 JSON Patch 失败: %v", err)
+			}
 
 			// 将补丁转换为字符串
 			patchStr, err := patch.String()

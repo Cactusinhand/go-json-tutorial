@@ -1,175 +1,225 @@
-// leptjson.go - JSON 库的基础实现
+// leptjson.go - Go语言版JSON库
 package leptjson
 
 import (
+	// "math"
+
+	"bytes"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 )
 
-// 类型常量
+// ValueType 表示JSON值的类型
+type ValueType int
+
+// JSON值类型常量
 const (
-	NULL   = iota // null
-	FALSE         // false
-	TRUE          // true
-	NUMBER        // 数值
-	STRING        // 字符串
-	ARRAY         // 数组
-	OBJECT        // 对象
+	NULL ValueType = iota
+	FALSE
+	TRUE
+	NUMBER
+	STRING
+	ARRAY
+	OBJECT
 )
 
-// 解析结果常量
+// ParseError 表示解析错误
+type ParseError int
+
+// 解析错误常量
 const (
-	PARSE_OK = iota
-	PARSE_EXPECT_VALUE
-	PARSE_INVALID_VALUE
-	PARSE_ROOT_NOT_SINGULAR
-	PARSE_NUMBER_TOO_BIG
-	PARSE_MISS_QUOTATION_MARK
-	PARSE_INVALID_STRING_ESCAPE
-	PARSE_INVALID_STRING_CHAR
-	PARSE_INVALID_UNICODE_SURROGATE
-	PARSE_INVALID_UNICODE_HEX
-	PARSE_MISS_COMMA_OR_SQUARE_BRACKET
-	PARSE_MISS_KEY
-	PARSE_MISS_COLON
-	PARSE_MISS_COMMA_OR_CURLY_BRACKET
+	PARSE_OK                           ParseError = iota // 解析成功
+	PARSE_EXPECT_VALUE                                   // 期望一个值
+	PARSE_INVALID_VALUE                                  // 无效的值
+	PARSE_ROOT_NOT_SINGULAR                              // 根节点不唯一
+	PARSE_NUMBER_TOO_BIG                                 // 数字太大
+	PARSE_MISS_QUOTATION_MARK                            // 缺少引号
+	PARSE_INVALID_STRING_ESCAPE                          // 无效的转义序列
+	PARSE_INVALID_STRING_CHAR                            // 无效的字符
+	PARSE_INVALID_UNICODE_HEX                            // 无效的Unicode十六进制
+	PARSE_INVALID_UNICODE_SURROGATE                      // 无效的Unicode代理对
+	PARSE_MISS_COMMA_OR_SQUARE_BRACKET                   // 缺少逗号或方括号
+	PARSE_MISS_KEY                                       // 缺少键
+	PARSE_MISS_COLON                                     // 缺少冒号
+	PARSE_MISS_COMMA_OR_CURLY_BRACKET                    // 缺少逗号或花括号
+	PARSE_MAX_DEPTH_EXCEEDED                             // 超过最大嵌套深度
+	PARSE_COMMENT_NOT_CLOSED                             // 注释未闭合
 )
 
-// Member 表示对象中的一个键值对
+// StringifyError 表示字符串化错误
+type StringifyError int
+
+// 字符串化错误常量
+const (
+	STRINGIFY_OK StringifyError = iota // 字符串化成功
+)
+
+// Member 表示对象的成员（键值对）
 type Member struct {
-	K string // 键名
+	K string // 键
 	V *Value // 值
 }
 
-// Value 表示一个 JSON 值
+// Value 表示一个JSON值
 type Value struct {
-	Type int       // 值类型
-	N    float64   // 数值
-	S    string    // 字符串
-	A    []*Value  // 数组
-	M    []*Member // 对象
+	Type ValueType `json:"type"` // 值类型
+	N    float64   `json:"n"`    // 数字值（当Type为NUMBER时有效）
+	S    string    `json:"s"`    // 字符串值（当Type为STRING时有效）
+	A    []*Value  `json:"a"`    // 数组值（当Type为ARRAY时有效）
+	O    []Member  `json:"o"`    // 对象值（当Type为OBJECT时有效）
 }
 
-// 字符分类函数
-func isDigit(ch byte) bool {
-	return ch >= '0' && ch <= '9'
-}
-
-func isDigit1to9(ch byte) bool {
-	return ch >= '1' && ch <= '9'
-}
-
-// 字符流解析器
-type context struct {
-	json  string // JSON 文本
-	stack []byte // 字符缓冲区
-	pos   int    // 当前位置
-}
-
-// 获取当前字符
-func (c *context) currentChar() byte {
-	if c.pos >= len(c.json) {
-		return 0
-	}
-	return c.json[c.pos]
-}
-
-// 获取下一个字符
-func (c *context) nextChar() byte {
-	c.pos++
-	return c.currentChar()
-}
-
-// 跳过空白字符
-func (c *context) skipWhitespace() {
-	for c.pos < len(c.json) {
-		ch := c.json[c.pos]
-		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-			c.pos++
-		} else {
-			break
-		}
-	}
-}
-
-// 解析 JSON 字符串
-func parseString(c *context, v *Value) int {
-	// 跳过开始的引号
-	p := c.pos + 1
-	for p < len(c.json) {
-		ch := c.json[p]
-		if ch == '"' {
-			// 找到结束引号
-			v.S = c.json[c.pos+1 : p]
-			v.Type = STRING
-			c.pos = p + 1
-			return PARSE_OK
-		} else if ch == '\\' {
-			// 处理转义字符
-			p++
-			if p >= len(c.json) {
-				return PARSE_INVALID_STRING_ESCAPE
+// String 返回Value的字符串表示
+func (v Value) String() string {
+	switch v.Type {
+	case NULL:
+		return "null"
+	case FALSE:
+		return "false"
+	case TRUE:
+		return "true"
+	case NUMBER:
+		return strconv.FormatFloat(v.N, 'f', -1, 64)
+	case STRING:
+		return "\"" + v.S + "\""
+	case ARRAY:
+		var sb strings.Builder
+		sb.WriteString("[")
+		for i, elem := range v.A {
+			if i > 0 {
+				sb.WriteString(",")
 			}
-			switch c.json[p] {
-			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
-				// 这些是有效的转义序列
-			case 'u':
-				// Unicode 转义序列
-				if p+4 >= len(c.json) {
-					return PARSE_INVALID_UNICODE_HEX
-				}
-				// 检查 4 位十六进制数字
-				for i := 1; i <= 4; i++ {
-					ch := c.json[p+i]
-					if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
-						return PARSE_INVALID_UNICODE_HEX
-					}
-				}
-				p += 4
-			default:
-				return PARSE_INVALID_STRING_ESCAPE
-			}
-		} else if ch < 0x20 {
-			// 控制字符不允许在字符串中
-			return PARSE_INVALID_STRING_CHAR
+			sb.WriteString(elem.String())
 		}
-		p++
+		sb.WriteString("]")
+		return sb.String()
+	case OBJECT:
+		var sb strings.Builder
+		sb.WriteString("{")
+		for i, member := range v.O {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString("\"")
+			sb.WriteString(member.K)
+			sb.WriteString("\":")
+			sb.WriteString(member.V.String())
+		}
+		sb.WriteString("}")
+		return sb.String()
+	default:
+		return "unknown"
 	}
-	// 字符串没有结束引号
-	return PARSE_MISS_QUOTATION_MARK
 }
 
-// 解析 null/true/false 字面值
-func parseLiteral(c *context, v *Value, literal string, type_ int) int {
-	// 检查字面值是否匹配
-	if len(c.json) < c.pos+len(literal) {
-		return PARSE_INVALID_VALUE
+// Parse 解析JSON文本（使用默认选项）
+func Parse(v *Value, json string) ParseError {
+	return ParseWithOptions(v, json, DefaultParseOptions())
+}
+
+// ParseWithOptions 使用自定义选项解析JSON文本
+//
+// 解析步骤：
+// 1. 跳过前导空白字符
+// 2. 解析JSON值
+// 3. 跳过后续空白字符
+// 4. 检查是否还有额外内容（这将导致PARSE_ROOT_NOT_SINGULAR错误）
+func ParseWithOptions(v *Value, json string, options ParseOptions) ParseError {
+	c := newContext(json, options)
+	v.Type = NULL // 初始化为NULL类型
+
+	// 跳过空白字符和注释
+	c.parseWhitespace()
+
+	// 解析JSON值
+	err := parseValue(c, v)
+	if err != PARSE_OK {
+		// 返回解析错误
+		return err
 	}
-	if c.json[c.pos:c.pos+len(literal)] != literal {
-		return PARSE_INVALID_VALUE
+
+	// 跳过尾部空白字符和注释
+	c.parseWhitespace()
+
+	// 检查是否有多余内容
+	if c.index < len(c.json) {
+		return PARSE_ROOT_NOT_SINGULAR
 	}
-	c.pos += len(literal)
-	v.Type = type_
+
 	return PARSE_OK
 }
 
-// 解析数字
-func parseNumber(c *context, v *Value) int {
-	start := c.pos
+// parseNull 解析null值
+//
+// 检查是否匹配"null"字符串，并设置值类型为NULL
+func parseNull(c *parseContext, v *Value) ParseError {
+	if c.index+3 >= len(c.json) || c.json[c.index:c.index+4] != "null" {
+		return PARSE_INVALID_VALUE
+	}
+	c.index += 4
+	v.Type = NULL
+	return PARSE_OK
+}
 
-	// 负号
-	if c.currentChar() == '-' {
+// parseTrue 解析true值
+//
+// 检查是否匹配"true"字符串，并设置值类型为TRUE
+func parseTrue(c *parseContext, v *Value) ParseError {
+	if c.index+3 >= len(c.json) || c.json[c.index:c.index+4] != "true" {
+		return PARSE_INVALID_VALUE
+	}
+	c.index += 4
+	v.Type = TRUE
+	return PARSE_OK
+}
+
+// parseFalse 解析false值
+//
+// 检查是否匹配"false"字符串，并设置值类型为FALSE
+func parseFalse(c *parseContext, v *Value) ParseError {
+	if c.index+4 >= len(c.json) || c.json[c.index:c.index+5] != "false" {
+		return PARSE_INVALID_VALUE
+	}
+	c.index += 5
+	v.Type = FALSE
+	return PARSE_OK
+}
+
+// parseNumber 解析数字值
+//
+// JSON数字语法规则：
+// number = [ "-" ] int [ frac ] [ exp ]
+// int = "0" / digit1-9 *digit
+// frac = "." 1*digit
+// exp = ("e" / "E") ["-" / "+"] 1*digit
+//
+// 特殊情况处理：
+// 1. 不允许有前导0后跟数字（如"01"是非法的）
+// 2. 不支持十六进制表示（如"0x1"是非法的）
+// 3. 处理数字溢出情况
+func parseNumber(c *parseContext, v *Value) ParseError {
+	startIndex := c.index
+
+	// 处理负号
+	if c.peekChar() == '-' {
 		c.nextChar()
 	}
 
 	// 整数部分
-	if c.currentChar() == '0' {
+	if c.peekChar() == '0' {
 		c.nextChar()
-	} else if isDigit1to9(c.currentChar()) {
+		// 0后面不能直接跟数字，必须是小数点或指数符号
+		if c.index < len(c.json) {
+			ch := c.peekChar()
+			// 检查0后面是否跟着x或X（十六进制表示法）或数字，都是非法的
+			if (ch >= '0' && ch <= '9') || ch == 'x' || ch == 'X' {
+				return PARSE_INVALID_VALUE
+			}
+		}
+	} else if c.index < len(c.json) && c.peekChar() >= '1' && c.peekChar() <= '9' {
 		c.nextChar()
-		for isDigit(c.currentChar()) {
+		for c.index < len(c.json) && c.peekChar() >= '0' && c.peekChar() <= '9' {
 			c.nextChar()
 		}
 	} else {
@@ -177,288 +227,1054 @@ func parseNumber(c *context, v *Value) int {
 	}
 
 	// 小数部分
-	if c.currentChar() == '.' {
+	if c.index < len(c.json) && c.peekChar() == '.' {
 		c.nextChar()
-		if !isDigit(c.currentChar()) {
+		if c.index >= len(c.json) || c.peekChar() < '0' || c.peekChar() > '9' {
 			return PARSE_INVALID_VALUE
 		}
-		c.nextChar()
-		for isDigit(c.currentChar()) {
+		for c.index < len(c.json) && c.peekChar() >= '0' && c.peekChar() <= '9' {
 			c.nextChar()
 		}
 	}
 
 	// 指数部分
-	if c.currentChar() == 'e' || c.currentChar() == 'E' {
+	if c.index < len(c.json) && (c.peekChar() == 'e' || c.peekChar() == 'E') {
 		c.nextChar()
-		if c.currentChar() == '+' || c.currentChar() == '-' {
+		if c.index < len(c.json) && (c.peekChar() == '+' || c.peekChar() == '-') {
 			c.nextChar()
 		}
-		if !isDigit(c.currentChar()) {
+		if c.index >= len(c.json) || c.peekChar() < '0' || c.peekChar() > '9' {
 			return PARSE_INVALID_VALUE
 		}
-		c.nextChar()
-		for isDigit(c.currentChar()) {
+		for c.index < len(c.json) && c.peekChar() >= '0' && c.peekChar() <= '9' {
 			c.nextChar()
 		}
 	}
 
-	// 提取并解析数值
-	numStr := c.json[start:c.pos]
+	// 解析完成，将JSON文本中的数字子串转换为浮点数
+	numStr := c.json[startIndex:c.index]
 	num, err := strconv.ParseFloat(numStr, 64)
-	if err != nil || math.IsInf(num, 0) || math.IsNaN(num) {
+	if err != nil {
+		// 可能是数字太大等原因导致的转换失败
 		return PARSE_NUMBER_TOO_BIG
 	}
-
 	v.Type = NUMBER
 	v.N = num
 	return PARSE_OK
 }
 
-// 前向声明
-var parseValue func(c *context, v *Value) int
+// parseString 解析字符串值
+//
+// 解析双引号包围的字符串并处理转义序列
+func parseString(c *parseContext, v *Value) ParseError {
+	var sb strings.Builder
+	err := parseStringRaw(c, nil, &sb)
+	if err != PARSE_OK {
+		return err
+	}
+	v.Type = STRING
+	v.S = sb.String()
+	return PARSE_OK
+}
 
-// 解析数组
-func parseArray(c *context, v *Value) int {
-	c.pos++ // 跳过 '['
+// parseStringRaw 解析原始字符串
+//
+// 当s不为nil时，直接将解析结果存入s而不使用sb
+// 当s为nil时，使用sb构建字符串
+func parseStringRaw(c *parseContext, s *string, sb *strings.Builder) ParseError {
+	// 确保是以引号开始的
+	if c.peekChar() != '"' {
+		return PARSE_MISS_QUOTATION_MARK
+	}
+	c.nextChar() // 跳过开始的双引号
+
+	for c.index < len(c.json) {
+		ch := c.nextChar() // 读取字符并前进
+		switch ch {
+		case '"': // 字符串结束
+			if s != nil {
+				*s = sb.String()
+			}
+			return PARSE_OK
+		case '\\': // 转义序列
+			if c.index >= len(c.json) {
+				return PARSE_INVALID_STRING_ESCAPE
+			}
+			switch c.peekChar() {
+			case '"', '\\', '/':
+				sb.WriteByte(c.nextChar())
+			case 'b':
+				c.nextChar()
+				sb.WriteByte('\b')
+			case 'f':
+				c.nextChar()
+				sb.WriteByte('\f')
+			case 'n':
+				c.nextChar()
+				sb.WriteByte('\n')
+			case 'r':
+				c.nextChar()
+				sb.WriteByte('\r')
+			case 't':
+				c.nextChar()
+				sb.WriteByte('\t')
+			case 'u': // Unicode
+				c.nextChar() // 跳过'u'
+				// 解析4位十六进制数字
+				if c.index+3 >= len(c.json) {
+					return PARSE_INVALID_UNICODE_HEX
+				}
+
+				// 解析高代理项（surrogate high）
+				var codepoint uint32
+				for i := 0; i < 4; i++ {
+					ch := c.nextChar()
+					codepoint <<= 4
+					if ch >= '0' && ch <= '9' {
+						codepoint |= uint32(ch - '0')
+					} else if ch >= 'A' && ch <= 'F' {
+						codepoint |= uint32(ch - 'A' + 10)
+					} else if ch >= 'a' && ch <= 'f' {
+						codepoint |= uint32(ch - 'a' + 10)
+					} else {
+						return PARSE_INVALID_UNICODE_HEX
+					}
+				}
+
+				// 检查是否是代理对的高位部分
+				if codepoint >= 0xD800 && codepoint <= 0xDBFF {
+					// 确保后面跟着低代理项
+					if c.index+5 >= len(c.json) {
+						return PARSE_INVALID_UNICODE_SURROGATE
+					}
+					if c.nextChar() != '\\' || c.nextChar() != 'u' {
+						return PARSE_INVALID_UNICODE_SURROGATE
+					}
+
+					// 解析低代理项（surrogate low）
+					var lowSurrogate uint32
+					for i := 0; i < 4; i++ {
+						ch := c.nextChar()
+						lowSurrogate <<= 4
+						if ch >= '0' && ch <= '9' {
+							lowSurrogate |= uint32(ch - '0')
+						} else if ch >= 'A' && ch <= 'F' {
+							lowSurrogate |= uint32(ch - 'A' + 10)
+						} else if ch >= 'a' && ch <= 'f' {
+							lowSurrogate |= uint32(ch - 'a' + 10)
+						} else {
+							return PARSE_INVALID_UNICODE_HEX
+						}
+					}
+
+					// 验证是否是有效的低代理项
+					if lowSurrogate < 0xDC00 || lowSurrogate > 0xDFFF {
+						return PARSE_INVALID_UNICODE_SURROGATE
+					}
+
+					// 组合高低代理项计算实际的Unicode码点
+					codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (lowSurrogate - 0xDC00)
+				}
+
+				// 将Unicode码点编码为UTF-8
+				if codepoint <= 0x7F {
+					sb.WriteByte(byte(codepoint & 0xFF))
+				} else if codepoint <= 0x7FF {
+					sb.WriteByte(byte(0xC0 | ((codepoint >> 6) & 0xFF)))
+					sb.WriteByte(byte(0x80 | (codepoint & 0x3F)))
+				} else if codepoint <= 0xFFFF {
+					sb.WriteByte(byte(0xE0 | ((codepoint >> 12) & 0xFF)))
+					sb.WriteByte(byte(0x80 | ((codepoint >> 6) & 0x3F)))
+					sb.WriteByte(byte(0x80 | (codepoint & 0x3F)))
+				} else {
+					sb.WriteByte(byte(0xF0 | ((codepoint >> 18) & 0xFF)))
+					sb.WriteByte(byte(0x80 | ((codepoint >> 12) & 0x3F)))
+					sb.WriteByte(byte(0x80 | ((codepoint >> 6) & 0x3F)))
+					sb.WriteByte(byte(0x80 | (codepoint & 0x3F)))
+				}
+			default:
+				return PARSE_INVALID_STRING_ESCAPE
+			}
+		case 0: // 这里用数字0代替'\0'，避免非法字符错误
+			return PARSE_MISS_QUOTATION_MARK
+		default:
+			// 控制字符（ASCII码小于0x20的字符）必须使用转义表示
+			if ch < 0x20 {
+				return PARSE_INVALID_STRING_CHAR
+			}
+			sb.WriteByte(ch)
+		}
+	}
+
+	// 如果执行到这里，说明字符串没有正常结束（缺少结束引号）
+	return PARSE_MISS_QUOTATION_MARK
+}
+
+// parseArray 解析数组值
+//
+// 解析形如 [value, value, ...] 的数组
+func parseArray(c *parseContext, v *Value) ParseError {
+	// 检查嵌套深度
+	canNest, err := c.enterNesting()
+	if !canNest {
+		return err.Code
+	}
+	defer c.exitNesting()
+
+	// 确保是以'['开始的
+	if c.peekChar() != '[' {
+		return PARSE_INVALID_VALUE
+	}
+	c.nextChar() // 跳过'['
+
+	// 初始化为空数组
 	v.Type = ARRAY
 	v.A = make([]*Value, 0)
 
-	c.skipWhitespace()
-	if c.currentChar() == ']' {
-		c.pos++ // 空数组
+	// 跳过空白字符
+	c.parseWhitespace()
+
+	// 处理空数组情况
+	if c.peekChar() == ']' {
+		c.nextChar() // 跳过']'
 		return PARSE_OK
 	}
 
+	// 循环解析数组元素
 	for {
-		// 解析元素
-		elem := &Value{}
-		ret := parseValue(c, elem)
-		if ret != PARSE_OK {
-			return ret
+		// 创建新的元素值并添加到数组中
+		elem := new(Value)
+
+		// 解析元素值
+		if err := parseValue(c, elem); err != PARSE_OK {
+			// 清理已分配的内存
+			for i := 0; i < len(v.A); i++ {
+				Free(v.A[i])
+			}
+			v.A = nil
+			return err
 		}
+
+		// 将解析好的元素添加到数组
 		v.A = append(v.A, elem)
 
-		c.skipWhitespace()
-		if c.currentChar() == ',' {
-			c.pos++
-			c.skipWhitespace()
-		} else if c.currentChar() == ']' {
-			c.pos++
+		// 跳过空白字符
+		c.parseWhitespace()
+
+		// 检查后续字符是逗号还是结束括号
+		if c.peekChar() == ',' {
+			c.nextChar() // 跳过','
+			c.parseWhitespace()
+		} else if c.peekChar() == ']' {
+			c.nextChar() // 跳过']'
 			return PARSE_OK
 		} else {
+			// 既不是逗号也不是结束括号，无效
+			// 清理已分配的内存
+			for i := 0; i < len(v.A); i++ {
+				Free(v.A[i])
+			}
+			v.A = nil
 			return PARSE_MISS_COMMA_OR_SQUARE_BRACKET
 		}
 	}
 }
 
-// 解析对象
-func parseObject(c *context, v *Value) int {
-	c.pos++ // 跳过 '{'
-	v.Type = OBJECT
-	v.M = make([]*Member, 0)
+// parseObject 解析对象值
+//
+// 解析形如 {"key": value, "key": value, ...} 的对象
+func parseObject(c *parseContext, v *Value) ParseError {
+	// 检查嵌套深度
+	canNest, err := c.enterNesting()
+	if !canNest {
+		return err.Code
+	}
+	defer c.exitNesting()
 
-	c.skipWhitespace()
-	if c.currentChar() == '}' {
-		c.pos++ // 空对象
+	// 确保是以'{'开始的
+	if c.peekChar() != '{' {
+		return PARSE_INVALID_VALUE
+	}
+	c.nextChar() // 跳过'{'
+
+	// 初始化为空对象
+	v.Type = OBJECT
+	v.O = make([]Member, 0)
+
+	// 跳过空白字符
+	c.parseWhitespace()
+
+	// 处理空对象情况
+	if c.peekChar() == '}' {
+		c.nextChar() // 跳过'}'
 		return PARSE_OK
 	}
 
+	// 循环解析对象成员
 	for {
-		// 解析键名
-		key := &Value{}
-		c.skipWhitespace()
-		if c.currentChar() != '"' {
+		var member Member
+
+		// 键必须是字符串
+		if c.peekChar() != '"' {
+			// 错误清理
+			for i := 0; i < len(v.O); i++ {
+				Free(v.O[i].V)
+			}
+			v.O = nil
 			return PARSE_MISS_KEY
 		}
-		if ret := parseString(c, key); ret != PARSE_OK {
-			return ret
-		}
 
-		// 解析冒号
-		c.skipWhitespace()
-		if c.currentChar() != ':' {
+		// 解析键
+		var key strings.Builder
+		if err := parseStringRaw(c, nil, &key); err != PARSE_OK {
+			// 错误清理
+			for i := 0; i < len(v.O); i++ {
+				Free(v.O[i].V)
+			}
+			v.O = nil
+			return err
+		}
+		member.K = key.String()
+
+		// 跳过空白字符，然后必须是冒号
+		c.parseWhitespace()
+		if c.peekChar() != ':' {
+			// 错误清理
+			for i := 0; i < len(v.O); i++ {
+				Free(v.O[i].V)
+			}
+			v.O = nil
 			return PARSE_MISS_COLON
 		}
-		c.pos++
+		c.nextChar() // 跳过':'
+		c.parseWhitespace()
 
 		// 解析值
-		val := &Value{}
-		if ret := parseValue(c, val); ret != PARSE_OK {
-			return ret
+		member.V = new(Value)
+		if err := parseValue(c, member.V); err != PARSE_OK {
+			// 错误清理
+			for i := 0; i < len(v.O); i++ {
+				Free(v.O[i].V)
+			}
+			v.O = nil
+			return err
 		}
 
-		// 添加键值对
-		member := &Member{
-			K: key.S,
-			V: val,
-		}
-		v.M = append(v.M, member)
+		// 添加成员到对象
+		v.O = append(v.O, member)
 
-		// 查看下一个字符
-		c.skipWhitespace()
-		if c.currentChar() == ',' {
-			c.pos++
-			c.skipWhitespace()
-		} else if c.currentChar() == '}' {
-			c.pos++
+		// 跳过空白字符
+		c.parseWhitespace()
+
+		// 检查后续字符是逗号还是结束括号
+		if c.peekChar() == ',' {
+			c.nextChar() // 跳过','
+			c.parseWhitespace()
+		} else if c.peekChar() == '}' {
+			c.nextChar() // 跳过'}'
 			return PARSE_OK
 		} else {
+			// 既不是逗号也不是结束括号，无效
+			// 错误清理
+			for i := 0; i < len(v.O); i++ {
+				Free(v.O[i].V)
+			}
+			v.O = nil
 			return PARSE_MISS_COMMA_OR_CURLY_BRACKET
 		}
 	}
 }
 
-// 实现前向声明的函数
-func init() {
-	parseValue = func(c *context, v *Value) int {
-		c.skipWhitespace()
-		switch c.currentChar() {
-		case 'n':
-			return parseLiteral(c, v, "null", NULL)
-		case 't':
-			return parseLiteral(c, v, "true", TRUE)
-		case 'f':
-			return parseLiteral(c, v, "false", FALSE)
-		case '"':
-			return parseString(c, v)
-		case '[':
-			return parseArray(c, v)
-		case '{':
-			return parseObject(c, v)
-		case 0:
-			return PARSE_EXPECT_VALUE
-		default:
-			return parseNumber(c, v)
+// parseValue 解析JSON值
+//
+// 根据当前字符确定JSON值的类型，并调用相应的解析函数
+// JSON值可以是以下几种类型之一：
+// - null: 以'n'开头
+// - true: 以't'开头
+// - false: 以'f'开头
+// - string: 以'"'开头
+// - array: 以'['开头
+// - object: 以'{'开头
+// - number: 以'-'或数字开头
+func parseValue(c *parseContext, v *Value) ParseError {
+	if c.index >= len(c.json) {
+		return PARSE_EXPECT_VALUE
+	}
+
+	switch c.json[c.index] {
+	case 'n':
+		return parseNull(c, v)
+	case 't':
+		return parseTrue(c, v)
+	case 'f':
+		return parseFalse(c, v)
+	case '"':
+		return parseString(c, v)
+	case '[':
+		return parseArray(c, v)
+	case '{':
+		return parseObject(c, v)
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		return parseNumber(c, v)
+	default:
+		return PARSE_INVALID_VALUE
+	}
+}
+
+// GetType 获取JSON值的类型
+func GetType(v *Value) ValueType {
+	return v.Type
+}
+
+// GetBoolean 获取JSON布尔值
+func GetBoolean(v *Value) bool {
+	return v.Type == TRUE
+}
+
+// SetBoolean 设置JSON布尔值
+func SetBoolean(v *Value, b bool) {
+	if b {
+		v.Type = TRUE
+	} else {
+		v.Type = FALSE
+	}
+}
+
+// GetNumber 获取JSON数字值
+func GetNumber(v *Value) float64 {
+	return v.N
+}
+
+// SetNumber 设置JSON数字值
+func SetNumber(v *Value, n float64) {
+	v.Type = NUMBER
+	v.N = n
+}
+
+// GetString 获取JSON字符串值
+func GetString(v *Value) string {
+	return v.S
+}
+
+// SetString 设置JSON字符串值
+func SetString(v *Value, s string) {
+	v.Type = STRING
+	v.S = s
+}
+
+// GetArraySize 获取JSON数组的大小
+func GetArraySize(v *Value) int {
+	return len(v.A)
+}
+
+// GetArrayElement 获取JSON数组的元素
+func GetArrayElement(v *Value, index int) *Value {
+	if index < 0 || index >= len(v.A) {
+		return nil
+	}
+	return v.A[index]
+}
+
+// GetObjectSize 获取JSON对象的大小
+func GetObjectSize(v *Value) int {
+	return len(v.O)
+}
+
+// GetObjectKey 获取JSON对象的键
+func GetObjectKey(v *Value, index int) string {
+	if index < 0 || index >= len(v.O) {
+		return ""
+	}
+	return v.O[index].K
+}
+
+// GetObjectValue 获取JSON对象的值
+func GetObjectValue(v *Value, index int) *Value {
+	if index < 0 || index >= len(v.O) {
+		return nil
+	}
+	return v.O[index].V
+}
+
+// FindObjectIndex 查找JSON对象中指定键的索引
+func FindObjectIndex(v *Value, key string) int {
+	for i, member := range v.O {
+		if member.K == key {
+			return i
 		}
 	}
+	return -1
 }
 
-// Parse 解析 JSON 字符串
-func Parse(v *Value, json string) int {
-	c := &context{
-		json:  json,
-		stack: make([]byte, 0),
-		pos:   0,
+// GetObjectValueByKey 根据键获取JSON对象的值
+func GetObjectValueByKey(v *Value, key string) *Value {
+	index := FindObjectIndex(v, key)
+	if index == -1 {
+		return nil
 	}
-
-	// 重置 Value
-	*v = Value{}
-
-	// 解析 JSON 值
-	c.skipWhitespace()
-	ret := parseValue(c, v)
-	if ret != PARSE_OK {
-		return ret
-	}
-
-	// 检查是否有多余内容
-	c.skipWhitespace()
-	if c.pos < len(c.json) {
-		return PARSE_ROOT_NOT_SINGULAR
-	}
-
-	return PARSE_OK
+	return v.O[index].V
 }
 
-// Stringify 将 JSON 值转换为字符串
-func Stringify(v *Value) (string, error) {
+// FindObjectKey 根据键名在对象中查找对应值，如果找到返回值和true，否则返回nil和false
+func FindObjectKey(v *Value, key string) (*Value, bool) {
+	// 检查是否为空或非对象类型
+	if v == nil || v.Type != OBJECT {
+		return nil, false
+	}
+
+	// 遍历对象成员查找匹配的键
+	for i := 0; i < len(v.O); i++ {
+		if v.O[i].K == key {
+			return v.O[i].V, true
+		}
+	}
+
+	// 未找到匹配的键
+	return nil, false
+}
+
+// Stringify 将Value转换为JSON字符串
+func Stringify(v *Value) (string, StringifyError) {
 	if v == nil {
-		return "", fmt.Errorf("值不能为 nil")
+		return "", STRINGIFY_OK
 	}
 
-	var result strings.Builder
+	var buffer bytes.Buffer
+	stringifyValue(v, &buffer)
+	return buffer.String(), STRINGIFY_OK
+}
 
+// stringifyValue 将Value写入Buffer
+func stringifyValue(v *Value, buffer *bytes.Buffer) {
 	switch v.Type {
 	case NULL:
-		result.WriteString("null")
-	case FALSE:
-		result.WriteString("false")
+		buffer.WriteString("null")
 	case TRUE:
-		result.WriteString("true")
+		buffer.WriteString("true")
+	case FALSE:
+		buffer.WriteString("false")
 	case NUMBER:
-		result.WriteString(strconv.FormatFloat(v.N, 'f', -1, 64))
+		// 使用 -1 精度以获得最短的表示形式
+		buffer.WriteString(strconv.FormatFloat(v.N, 'g', -1, 64))
 	case STRING:
-		result.WriteString(fmt.Sprintf("%q", v.S))
+		stringifyString(v.S, buffer)
 	case ARRAY:
-		result.WriteString("[")
-		for i, elem := range v.A {
-			if i > 0 {
-				result.WriteString(",")
-			}
-			elemStr, err := Stringify(elem)
-			if err != nil {
-				return "", err
-			}
-			result.WriteString(elemStr)
-		}
-		result.WriteString("]")
+		stringifyArray(v, buffer)
 	case OBJECT:
-		result.WriteString("{")
-		for i, member := range v.M {
-			if i > 0 {
-				result.WriteString(",")
-			}
-			result.WriteString(fmt.Sprintf("%q:", member.K))
-			valStr, err := Stringify(member.V)
-			if err != nil {
-				return "", err
-			}
-			result.WriteString(valStr)
-		}
-		result.WriteString("}")
-	default:
-		return "", fmt.Errorf("未知的值类型: %d", v.Type)
+		stringifyObject(v, buffer)
 	}
-
-	return result.String(), nil
 }
 
-// GetTypeStr 获取类型的字符串表示
-func GetTypeStr(type_ int) string {
-	switch type_ {
+// stringifyString 将字符串写入Buffer，处理转义字符
+func stringifyString(s string, buffer *bytes.Buffer) {
+	buffer.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch ch {
+		case '"':
+			buffer.WriteString("\\\"")
+		case '\\':
+			buffer.WriteString("\\\\")
+		case '/':
+			buffer.WriteString("\\/")
+		case '\b':
+			buffer.WriteString("\\b")
+		case '\f':
+			buffer.WriteString("\\f")
+		case '\n':
+			buffer.WriteString("\\n")
+		case '\r':
+			buffer.WriteString("\\r")
+		case '\t':
+			buffer.WriteString("\\t")
+		default:
+			if ch < 0x20 {
+				// 对于其他控制字符，使用 \u00xx 形式
+				buffer.WriteString(fmt.Sprintf("\\u%04x", ch))
+			} else {
+				buffer.WriteByte(ch)
+			}
+		}
+	}
+	buffer.WriteByte('"')
+}
+
+// stringifyArray 将数组写入Buffer
+func stringifyArray(v *Value, buffer *bytes.Buffer) {
+	buffer.WriteByte('[')
+	for i, elem := range v.A {
+		if i > 0 {
+			buffer.WriteByte(',')
+		}
+		stringifyValue(elem, buffer)
+	}
+	buffer.WriteByte(']')
+}
+
+// stringifyObject 将对象写入Buffer
+func stringifyObject(v *Value, buffer *bytes.Buffer) {
+	buffer.WriteByte('{')
+	for i, member := range v.O {
+		if i > 0 {
+			buffer.WriteByte(',')
+		}
+		stringifyString(member.K, buffer)
+		buffer.WriteByte(':')
+		stringifyValue(member.V, buffer)
+	}
+	buffer.WriteByte('}')
+}
+
+// Equal 判断两个JSON值是否相等
+func Equal(lhs, rhs *Value) bool {
+	// 首先检查指针是否相同
+	if lhs == rhs {
+		return true
+	}
+
+	// 检查两个值是否都为nil
+	if lhs == nil || rhs == nil {
+		return lhs == nil && rhs == nil
+	}
+
+	// 检查类型是否相同
+	if lhs.Type != rhs.Type {
+		return false
+	}
+
+	// 根据类型进行比较
+	switch lhs.Type {
+	case NULL, FALSE, TRUE:
+		return true // 这些类型只要类型相同就相等
+	case NUMBER:
+		return lhs.N == rhs.N
+	case STRING:
+		return lhs.S == rhs.S
+	case ARRAY:
+		// 数组长度必须相同
+		if len(lhs.A) != len(rhs.A) {
+			return false
+		}
+		// 递归比较每个元素
+		for i := 0; i < len(lhs.A); i++ {
+			if !Equal(lhs.A[i], rhs.A[i]) {
+				return false
+			}
+		}
+		return true
+	case OBJECT:
+		// 对象成员数必须相同
+		if len(lhs.O) != len(rhs.O) {
+			return false
+		}
+
+		// 对于对象，键值对的顺序可能不同，所以需要通过键来查找
+		for _, m1 := range lhs.O {
+			// 在rhs中查找对应的键
+			found := false
+			for _, m2 := range rhs.O {
+				if m1.K == m2.K {
+					found = true
+					// 递归比较值
+					if !Equal(m1.V, m2.V) {
+						return false
+					}
+					break
+				}
+			}
+			if !found {
+				return false // rhs中没有找到m1的键
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// Copy 深度复制一个JSON值
+func Copy(dst, src *Value) {
+	if dst == nil || src == nil || dst == src {
+		return
+	}
+
+	// 先释放目标值
+	Free(dst)
+
+	// 根据源值类型进行复制
+	switch src.Type {
 	case NULL:
-		return "null"
-	case TRUE:
-		return "true"
+		dst.Type = NULL
 	case FALSE:
-		return "false"
+		dst.Type = FALSE
+	case TRUE:
+		dst.Type = TRUE
 	case NUMBER:
-		return "number"
+		dst.Type = NUMBER
+		dst.N = src.N
 	case STRING:
-		return "string"
+		SetString(dst, src.S)
 	case ARRAY:
-		return "array"
+		// 设置为数组类型并预分配空间
+		SetArray(dst, len(src.A))
+		// 递归复制每个元素
+		for i := 0; i < len(src.A); i++ {
+			element := &Value{}
+			Copy(element, src.A[i])
+			dst.A = append(dst.A, element)
+		}
 	case OBJECT:
-		return "object"
-	default:
-		return "unknown"
+		// 设置为对象类型并预分配空间
+		SetObject(dst)
+		// 递归复制每个成员
+		for i := 0; i < len(src.O); i++ {
+			v := &Value{}
+			Copy(v, src.O[i].V)
+			dst.O = append(dst.O, Member{K: src.O[i].K, V: v})
+		}
 	}
 }
 
-// GetErrorMessage 获取解析错误的字符串表示
-func GetErrorMessage(err int) string {
-	switch err {
+// Move 将源值移动到目标值，并将源值设为null
+func Move(dst, src *Value) {
+	if dst == nil || src == nil || dst == src {
+		return
+	}
+
+	// 先释放目标值
+	Free(dst)
+
+	// 直接复制src的所有内容
+	*dst = *src
+
+	// 将src设为null
+	src.Type = NULL
+	src.A = nil // 确保数组引用被清空
+	src.O = nil // 确保对象引用被清空
+}
+
+// Swap 交换两个JSON值
+func Swap(lhs, rhs *Value) {
+	if lhs == nil || rhs == nil || lhs == rhs {
+		return
+	}
+
+	// 使用临时变量交换
+	temp := *lhs
+	*lhs = *rhs
+	*rhs = temp
+}
+
+// SetArray 设置值为数组类型，可以预分配容量
+func SetArray(v *Value, capacity int) {
+	if v == nil {
+		return
+	}
+
+	// 先释放原来的资源
+	Free(v)
+
+	// 设置为数组类型
+	v.Type = ARRAY
+	if capacity > 0 {
+		v.A = make([]*Value, 0, capacity)
+	} else {
+		v.A = nil
+	}
+}
+
+// SetObject 设置值为对象类型，可以预分配容量
+func SetObject(v *Value) {
+	if v == nil {
+		return
+	}
+
+	// 先释放原来的资源
+	Free(v)
+
+	// 设置为对象类型
+	v.Type = OBJECT
+	v.O = []Member{}
+}
+
+// Free 释放JSON值占用的资源
+func Free(v *Value) {
+	if v == nil {
+		return
+	}
+
+	switch v.Type {
+	case STRING:
+		// Go中字符串是不可变的，不需要手动释放内存
+		v.S = ""
+	case ARRAY:
+		// 递归释放数组中的每个元素
+		for i := 0; i < len(v.A); i++ {
+			Free(v.A[i])
+		}
+		v.A = nil
+	case OBJECT:
+		// 递归释放对象中的每个值
+		for i := 0; i < len(v.O); i++ {
+			Free(v.O[i].V)
+		}
+		v.O = nil
+	}
+
+	// 将值类型设为NULL
+	v.Type = NULL
+}
+
+// GetArrayCapacity 获取数组当前的容量
+func GetArrayCapacity(v *Value) int {
+	if v == nil || v.Type != ARRAY {
+		return 0
+	}
+	return cap(v.A)
+}
+
+// ReserveArray 扩充数组容量
+func ReserveArray(v *Value, capacity int) {
+	if v == nil || v.Type != ARRAY || capacity <= cap(v.A) {
+		return
+	}
+
+	// 创建新的更大容量的切片
+	newArray := make([]*Value, len(v.A), capacity)
+	// 复制原有元素
+	copy(newArray, v.A)
+	v.A = newArray
+}
+
+// ShrinkArray 缩小数组容量至实际大小
+func ShrinkArray(v *Value) {
+	if v == nil || v.Type != ARRAY || len(v.A) == cap(v.A) {
+		return
+	}
+
+	// 创建新的切片，容量与长度相同
+	newArray := make([]*Value, len(v.A))
+	copy(newArray, v.A)
+	v.A = newArray
+}
+
+// PushBackArrayElement 在数组末尾添加一个新元素，并返回该元素
+func PushBackArrayElement(v *Value) *Value {
+	if v == nil || v.Type != ARRAY {
+		return nil
+	}
+
+	// 当容量不足时扩容
+	if len(v.A) == cap(v.A) {
+		// 使用自定义的max函数
+		newCapacity := maxInt(1, cap(v.A)*2)
+		ReserveArray(v, newCapacity)
+	}
+
+	// 创建新元素
+	newElement := &Value{Type: NULL}
+	v.A = append(v.A, newElement)
+	return newElement
+}
+
+// PopBackArrayElement 移除数组末尾的元素
+func PopBackArrayElement(v *Value) {
+	if v == nil || v.Type != ARRAY || len(v.A) == 0 {
+		return
+	}
+
+	// 获取最后一个元素并释放其资源
+	lastIndex := len(v.A) - 1
+	Free(v.A[lastIndex])
+
+	// 截断数组
+	v.A = v.A[:lastIndex]
+}
+
+// InsertArrayElement 在指定位置插入元素，并返回该元素
+func InsertArrayElement(v *Value, index int) *Value {
+	if v == nil || v.Type != ARRAY || index < 0 || index > len(v.A) {
+		return nil
+	}
+
+	// 相当于在末尾追加
+	if index == len(v.A) {
+		return PushBackArrayElement(v)
+	}
+
+	// 当容量不足时扩容
+	if len(v.A) == cap(v.A) {
+		// 使用自定义的max函数
+		newCapacity := maxInt(1, cap(v.A)*2)
+		ReserveArray(v, newCapacity)
+	}
+
+	// 创建新元素
+	newElement := &Value{Type: NULL}
+
+	// 扩展数组并移动元素
+	v.A = append(v.A, nil) // 追加一个nil占位
+	// 从后向前移动元素
+	for i := len(v.A) - 1; i > index; i-- {
+		v.A[i] = v.A[i-1]
+	}
+	v.A[index] = newElement
+
+	return newElement
+}
+
+// EraseArrayElement 删除数组中从index开始的count个元素
+func EraseArrayElement(v *Value, index, count int) {
+	if v == nil || v.Type != ARRAY || index < 0 || index >= len(v.A) || count <= 0 {
+		return
+	}
+
+	// 调整count，确保不会超出数组范围
+	if index+count > len(v.A) {
+		count = len(v.A) - index
+	}
+
+	// 释放要删除的元素
+	for i := 0; i < count; i++ {
+		Free(v.A[index+i])
+	}
+
+	// 移动元素
+	copy(v.A[index:], v.A[index+count:])
+
+	// 调整数组大小
+	v.A = v.A[:len(v.A)-count]
+}
+
+// ClearArray 清空数组的所有元素
+func ClearArray(v *Value) {
+	if v == nil || v.Type != ARRAY {
+		return
+	}
+
+	// 释放所有元素
+	for i := 0; i < len(v.A); i++ {
+		Free(v.A[i])
+	}
+
+	// 清空数组但保留容量
+	v.A = v.A[:0]
+}
+
+// GetObjectCapacity 获取对象的容量
+func GetObjectCapacity(v *Value) int {
+	if v == nil || v.Type != OBJECT {
+		return 0
+	}
+	return cap(v.O)
+}
+
+// ReserveObject 扩充对象容量
+func ReserveObject(v *Value, capacity int) {
+	if v == nil || v.Type != OBJECT || capacity <= cap(v.O) {
+		return
+	}
+
+	// 创建更大容量的切片
+	newObject := make([]Member, len(v.O), capacity)
+	copy(newObject, v.O)
+	v.O = newObject
+}
+
+// ShrinkObject 缩小对象容量至实际大小
+func ShrinkObject(v *Value) {
+	if v == nil || v.Type != OBJECT || len(v.O) == cap(v.O) {
+		return
+	}
+
+	// 创建新的切片，容量与长度相同
+	newObject := make([]Member, len(v.O))
+	copy(newObject, v.O)
+	v.O = newObject
+}
+
+// SetObjectValue 设置对象的键值对，如果键已存在则返回其值指针，否则添加新的键值对并返回新值指针
+func SetObjectValue(v *Value, key string) *Value {
+	if v == nil || v.Type != OBJECT {
+		return nil
+	}
+
+	// 先查找是否已存在该键
+	for i := 0; i < len(v.O); i++ {
+		if v.O[i].K == key {
+			return v.O[i].V
+		}
+	}
+
+	// 当容量不足时扩容
+	if len(v.O) == cap(v.O) {
+		newCapacity := maxInt(1, cap(v.O)*2)
+		ReserveObject(v, newCapacity)
+	}
+
+	// 创建新值
+	newValue := &Value{Type: NULL}
+
+	// 添加新的键值对
+	v.O = append(v.O, Member{K: key, V: newValue})
+
+	return newValue
+}
+
+// RemoveObjectValue 移除对象中指定索引的成员
+func RemoveObjectValue(v *Value, index int) {
+	if v == nil || v.Type != OBJECT || index < 0 || index >= len(v.O) {
+		return
+	}
+
+	// 释放值的资源
+	Free(v.O[index].V)
+
+	// 移动元素
+	copy(v.O[index:], v.O[index+1:])
+
+	// 调整对象大小
+	v.O = v.O[:len(v.O)-1]
+}
+
+// ClearObject 清空对象的所有成员
+func ClearObject(v *Value) {
+	if v == nil || v.Type != OBJECT {
+		return
+	}
+
+	// 释放所有值
+	for i := 0; i < len(v.O); i++ {
+		Free(v.O[i].V)
+	}
+
+	// 清空对象但保留容量
+	v.O = v.O[:0]
+}
+
+// Error 返回解析错误的描述
+func (e ParseError) Error() string {
+	switch e {
 	case PARSE_OK:
-		return "正常"
+		return "解析成功"
 	case PARSE_EXPECT_VALUE:
-		return "空 JSON 文档"
+		return "期望一个值"
 	case PARSE_INVALID_VALUE:
 		return "无效的值"
 	case PARSE_ROOT_NOT_SINGULAR:
-		return "根之后还有其他内容"
+		return "根节点不唯一"
 	case PARSE_NUMBER_TOO_BIG:
-		return "数字过大"
+		return "数字太大"
 	case PARSE_MISS_QUOTATION_MARK:
 		return "缺少引号"
 	case PARSE_INVALID_STRING_ESCAPE:
 		return "无效的转义序列"
 	case PARSE_INVALID_STRING_CHAR:
-		return "无效的字符串字符"
-	case PARSE_INVALID_UNICODE_SURROGATE:
-		return "无效的 Unicode 代理项"
+		return "无效的字符"
 	case PARSE_INVALID_UNICODE_HEX:
-		return "无效的 Unicode 十六进制数字"
+		return "无效的Unicode十六进制"
+	case PARSE_INVALID_UNICODE_SURROGATE:
+		return "无效的Unicode代理对"
 	case PARSE_MISS_COMMA_OR_SQUARE_BRACKET:
 		return "缺少逗号或方括号"
 	case PARSE_MISS_KEY:
@@ -467,318 +1283,103 @@ func GetErrorMessage(err int) string {
 		return "缺少冒号"
 	case PARSE_MISS_COMMA_OR_CURLY_BRACKET:
 		return "缺少逗号或花括号"
+	case PARSE_MAX_DEPTH_EXCEEDED:
+		return "超过最大嵌套深度"
+	case PARSE_COMMENT_NOT_CLOSED:
+		return "注释未闭合"
 	default:
 		return "未知错误"
 	}
 }
 
-// GetType 获取值类型
-func GetType(v *Value) int {
-	if v == nil {
-		return NULL
-	}
-	return v.Type
-}
-
-// GetNull 获取 null 值
-func GetNull(v *Value) bool {
-	return v != nil && v.Type == NULL
-}
-
-// GetBoolean 获取布尔值
-func GetBoolean(v *Value) bool {
-	if v == nil || (v.Type != TRUE && v.Type != FALSE) {
-		return false
-	}
-	return v.Type == TRUE
-}
-
-// GetNumber 获取数值
-func GetNumber(v *Value) float64 {
-	if v == nil || v.Type != NUMBER {
-		return 0.0
-	}
-	return v.N
-}
-
-// GetString 获取字符串
-func GetString(v *Value) string {
-	if v == nil || v.Type != STRING {
-		return ""
-	}
-	return v.S
-}
-
-// GetArray 获取数组
-func GetArray(v *Value) []*Value {
-	if v == nil || v.Type != ARRAY {
-		return nil
-	}
-	return v.A
-}
-
-// GetArraySize 获取数组大小
-func GetArraySize(v *Value) int {
-	if v == nil || v.Type != ARRAY {
-		return 0
-	}
-	return len(v.A)
-}
-
-// GetArrayElement 获取数组元素
-func GetArrayElement(v *Value, index int) *Value {
-	if v == nil || v.Type != ARRAY || index < 0 || index >= len(v.A) {
-		return nil
-	}
-	return v.A[index]
-}
-
-// GetObject 获取对象
-func GetObject(v *Value) []*Member {
-	if v == nil || v.Type != OBJECT {
-		return nil
-	}
-	return v.M
-}
-
-// GetObjectSize 获取对象大小
-func GetObjectSize(v *Value) int {
-	if v == nil || v.Type != OBJECT {
-		return 0
-	}
-	return len(v.M)
-}
-
-// FindObjectKey 在对象中查找指定键
-func FindObjectKey(v *Value, key string) (*Value, bool) {
-	if v == nil || v.Type != OBJECT {
-		return nil, false
-	}
-	for _, m := range v.M {
-		if m.K == key {
-			return m.V, true
-		}
-	}
-	return nil, false
-}
-
-// SetNull 设置 null 值
-func SetNull(v *Value) {
-	*v = Value{Type: NULL}
-}
-
-// SetBoolean 设置布尔值
-func SetBoolean(v *Value, b bool) {
-	if b {
-		*v = Value{Type: TRUE}
-	} else {
-		*v = Value{Type: FALSE}
-	}
-}
-
-// SetNumber 设置数值
-func SetNumber(v *Value, n float64) {
-	*v = Value{Type: NUMBER, N: n}
-}
-
-// SetString 设置字符串
-func SetString(v *Value, s string) {
-	*v = Value{Type: STRING, S: s}
-}
-
-// SetArray 设置数组
-func SetArray(v *Value, capacity int) {
-	*v = Value{Type: ARRAY, A: make([]*Value, 0, capacity)}
-}
-
-// PushBackArrayElement 向数组末尾添加元素
-func PushBackArrayElement(v *Value) *Value {
-	if v.Type != ARRAY {
-		return nil
-	}
-	element := &Value{}
-	v.A = append(v.A, element)
-	return element
-}
-
-// PopBackArrayElement 从数组末尾移除元素
-func PopBackArrayElement(v *Value) bool {
-	if v.Type != ARRAY || len(v.A) == 0 {
-		return false
-	}
-	v.A = v.A[:len(v.A)-1]
-	return true
-}
-
-// InsertArrayElement 在数组中插入元素
-func InsertArrayElement(v *Value, index int, value *Value) bool {
-	if v.Type != ARRAY || index < 0 || index > len(v.A) {
-		return false
-	}
-	if index == len(v.A) {
-		// 追加到末尾
-		newValue := &Value{}
-		Copy(newValue, value)
-		v.A = append(v.A, newValue)
-	} else {
-		// 在中间插入
-		newValue := &Value{}
-		Copy(newValue, value)
-		v.A = append(v.A[:index+1], v.A[index:]...)
-		v.A[index] = newValue
-	}
-	return true
-}
-
-// EraseArrayElement 从数组中擦除元素
-func EraseArrayElement(v *Value, index, count int) bool {
-	if v.Type != ARRAY || index < 0 || count <= 0 || index+count > len(v.A) {
-		return false
-	}
-	v.A = append(v.A[:index], v.A[index+count:]...)
-	return true
-}
-
-// ClearArray 清空数组
-func ClearArray(v *Value) bool {
-	if v.Type != ARRAY {
-		return false
-	}
-	v.A = v.A[:0]
-	return true
-}
-
-// SetObject 设置对象
-func SetObject(v *Value) {
-	*v = Value{Type: OBJECT, M: make([]*Member, 0)}
-}
-
-// SetObjectValue 设置对象的键值对
-func SetObjectValue(v *Value, key string) *Value {
-	if v.Type != OBJECT {
-		return nil
-	}
-	// 查找是否已存在该键
-	for _, m := range v.M {
-		if m.K == key {
-			return m.V
-		}
-	}
-	// 不存在则添加新成员
-	member := &Member{
-		K: key,
-		V: &Value{},
-	}
-	v.M = append(v.M, member)
-	return member.V
-}
-
-// RemoveObjectValue 移除对象的键值对
-func RemoveObjectValue(v *Value, key string) bool {
-	if v.Type != OBJECT {
-		return false
-	}
-	for i, m := range v.M {
-		if m.K == key {
-			v.M = append(v.M[:i], v.M[i+1:]...)
-			return true
-		}
-	}
-	return false
-}
-
-// ClearObject 清空对象
-func ClearObject(v *Value) bool {
-	if v.Type != OBJECT {
-		return false
-	}
-	v.M = v.M[:0]
-	return true
-}
-
-// Copy 复制 JSON 值
-func Copy(dst, src *Value) {
-	if dst == nil || src == nil {
-		return
-	}
-
-	switch src.Type {
-	case NULL:
-		SetNull(dst)
-	case FALSE:
-		SetBoolean(dst, false)
-	case TRUE:
-		SetBoolean(dst, true)
-	case NUMBER:
-		SetNumber(dst, src.N)
-	case STRING:
-		SetString(dst, src.S)
-	case ARRAY:
-		SetArray(dst, len(src.A))
-		for _, elem := range src.A {
-			newElem := PushBackArrayElement(dst)
-			Copy(newElem, elem)
-		}
-	case OBJECT:
-		SetObject(dst)
-		for _, m := range src.M {
-			newVal := SetObjectValue(dst, m.K)
-			Copy(newVal, m.V)
-		}
-	}
-}
-
-// Equal 比较两个 JSON 值是否相等
-func Equal(a, b *Value) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	if a.Type != b.Type {
-		return false
-	}
-
-	switch a.Type {
-	case NULL, TRUE, FALSE:
-		return true
-	case NUMBER:
-		return a.N == b.N
-	case STRING:
-		return a.S == b.S
-	case ARRAY:
-		if len(a.A) != len(b.A) {
-			return false
-		}
-		for i := range a.A {
-			if !Equal(a.A[i], b.A[i]) {
-				return false
-			}
-		}
-		return true
-	case OBJECT:
-		if len(a.M) != len(b.M) {
-			return false
-		}
-		// 对象比较需要忽略成员顺序
-		for _, mA := range a.M {
-			found := false
-			for _, mB := range b.M {
-				if mA.K == mB.K {
-					found = true
-					if !Equal(mA.V, mB.V) {
-						return false
-					}
-					break
-				}
-			}
-			if !found {
-				return false
-			}
-		}
-		return true
+// Error 返回字符串化错误的描述
+func (e StringifyError) Error() string {
+	switch e {
+	case STRINGIFY_OK:
+		return "字符串化成功"
 	default:
-		return false
+		return "未知错误"
 	}
+}
+
+// maxInt 返回两个整数中的较大值
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// 导出的API函数 - JSON指针
+
+// GetValueByPointer 使用JSON指针获取值
+func GetValueByPointer(v *Value, pointerStr string) (*Value, error) {
+	pointer, err := ParseJSONPointer(pointerStr)
+	if err != POINTER_OK {
+		return nil, err
+	}
+	return pointer.Get(v)
+}
+
+// SetValueByPointer 使用JSON指针设置值
+func SetValueByPointer(v *Value, pointerStr string, value *Value) error {
+	pointer, err := ParseJSONPointer(pointerStr)
+	if err != POINTER_OK {
+		return err
+	}
+	return pointer.Insert(v, value)
+}
+
+// RemoveValueByPointer 使用JSON指针删除值
+func RemoveValueByPointer(v *Value, pointerStr string) error {
+	pointer, err := ParseJSONPointer(pointerStr)
+	if err != POINTER_OK {
+		return err
+	}
+	return pointer.Remove(v)
+}
+
+// BuildJSONPointer 创建一个JSON指针字符串
+func BuildJSONPointer(segments ...interface{}) (string, error) {
+	pointer, err := GetJSONPointer(segments...)
+	if err != nil {
+		return "", err
+	}
+	return pointer.String(), nil
+}
+
+// 导出的API函数 - 循环引用检测
+
+// HasCycle 检测JSON值中是否存在循环引用
+func HasCycle(v *Value) bool {
+	return DetectCycle(v) == CYCLE_DETECTED
+}
+
+// CopySafe 安全复制JSON值，避免循环引用
+func CopySafe(dst, src *Value) error {
+	return SafeCopy(dst, src)
+}
+
+// DefaultCircularReplacer 默认循环引用替换器
+func DefaultCircularReplacer(path []string) *Value {
+	// 创建一个表示循环引用的字符串值
+	v := &Value{}
+	SetString(v, fmt.Sprintf("循环引用 -> /%s", strings.Join(path, "/")))
+	return v
+}
+
+// CopySafeWithReplacement 带替换的安全复制
+func CopySafeWithReplacement(dst, src *Value) {
+	SafeCopyWithReplacer(dst, src, DefaultCircularReplacer)
+}
+
+// CustomCopySafeWithReplacement 使用自定义替换器的安全复制
+func CustomCopySafeWithReplacement(dst, src *Value, replacer CircularReplacer) {
+	SafeCopyWithReplacer(dst, src, replacer)
+}
+
+// SetNull 将值设置为NULL类型
+func SetNull(v *Value) {
+	Free(v) // 释放可能存在的资源
+	v.Type = NULL
 }

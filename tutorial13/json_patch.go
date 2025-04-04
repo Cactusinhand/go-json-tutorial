@@ -3,7 +3,6 @@ package leptjson
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -35,7 +34,7 @@ type JSONPatch struct {
 // NewJSONPatch 从 JSON 值中创建 JSON Patch 对象
 func NewJSONPatch(patchDoc *Value) (*JSONPatch, error) {
 	// 检查 patchDoc 是否是一个数组
-	if patchDoc.Type != ARRAY {
+	if GetType(patchDoc) != ARRAY {
 		return nil, &PatchError{
 			Operation: "parse",
 			Path:      "",
@@ -49,7 +48,7 @@ func NewJSONPatch(patchDoc *Value) (*JSONPatch, error) {
 
 	// 解析每个操作
 	for i, opVal := range patchDoc.A {
-		if opVal.Type != OBJECT {
+		if GetType(opVal) != OBJECT {
 			return nil, &PatchError{
 				Operation: "parse",
 				Path:      fmt.Sprintf("[%d]", i),
@@ -60,8 +59,8 @@ func NewJSONPatch(patchDoc *Value) (*JSONPatch, error) {
 		op := PatchOperation{}
 
 		// 获取操作类型 (op)
-		opTypeVal, found := FindObjectKey(opVal, "op")
-		if !found || opTypeVal.Type != STRING {
+		opTypeVal := GetObjectValueByKey(opVal, "op")
+		if opTypeVal == nil || GetType(opTypeVal) != STRING {
 			return nil, &PatchError{
 				Operation: "parse",
 				Path:      fmt.Sprintf("[%d]", i),
@@ -80,8 +79,8 @@ func NewJSONPatch(patchDoc *Value) (*JSONPatch, error) {
 		}
 
 		// 获取路径 (path)
-		pathVal, found := FindObjectKey(opVal, "path")
-		if !found || pathVal.Type != STRING {
+		pathVal := GetObjectValueByKey(opVal, "path")
+		if pathVal == nil || GetType(pathVal) != STRING {
 			return nil, &PatchError{
 				Operation: "parse",
 				Path:      fmt.Sprintf("[%d]", i),
@@ -92,8 +91,8 @@ func NewJSONPatch(patchDoc *Value) (*JSONPatch, error) {
 
 		// 对于 move 和 copy 操作，获取 from 路径
 		if op.Op == "move" || op.Op == "copy" {
-			fromVal, found := FindObjectKey(opVal, "from")
-			if !found || fromVal.Type != STRING {
+			fromVal := GetObjectValueByKey(opVal, "from")
+			if fromVal == nil || GetType(fromVal) != STRING {
 				return nil, &PatchError{
 					Operation: op.Op,
 					Path:      op.Path,
@@ -105,8 +104,8 @@ func NewJSONPatch(patchDoc *Value) (*JSONPatch, error) {
 
 		// 对于 add, replace 和 test 操作，获取 value
 		if op.Op == "add" || op.Op == "replace" || op.Op == "test" {
-			valueVal, found := FindObjectKey(opVal, "value")
-			if !found {
+			valueVal := GetObjectValueByKey(opVal, "value")
+			if valueVal == nil {
 				return nil, &PatchError{
 					Operation: op.Op,
 					Path:      op.Path,
@@ -128,12 +127,14 @@ func NewJSONPatch(patchDoc *Value) (*JSONPatch, error) {
 func NewJSONPatchFromString(patchStr string) (*JSONPatch, error) {
 	// 解析 JSON 字符串
 	patchDoc := &Value{}
-	err := Parse(patchDoc, patchStr)
-	if err != PARSE_OK {
+	errCode := Parse(patchDoc, patchStr)
+	if errCode != PARSE_OK {
+		// 假设 GetErrorMessage 仍然存在且可用
+		// 如果 leptjson.go 中的错误处理机制变化，这里需要调整
 		return nil, &PatchError{
 			Operation: "parse",
 			Path:      "",
-			Message:   fmt.Sprintf("无法解析 JSON Patch 文档: %s", GetErrorMessage(err)),
+			Message:   fmt.Sprintf("无法解析 JSON Patch 文档: %s", GetErrorMessage(errCode)),
 		}
 	}
 
@@ -158,7 +159,8 @@ func (p *JSONPatch) Apply(doc *Value) error {
 // applyOperation 应用单个 Patch 操作到文档
 func applyOperation(doc *Value, op *PatchOperation) error {
 	// 特殊处理替换整个文档的情况
-	if op.Op == "replace" && op.Path == "/" {
+	if op.Op == "replace" && (op.Path == "" || op.Path == "/") {
+		// 使用 Copy 函数来替换整个文档
 		Copy(doc, op.Value)
 		return nil
 	}
@@ -188,166 +190,208 @@ func applyOperation(doc *Value, op *PatchOperation) error {
 // applyAddOperation 实现 add 操作
 func applyAddOperation(doc *Value, op *PatchOperation) error {
 	// 解析 JSON Pointer
-	pointer, err := NewJSONPointer(op.Path)
-	if err != nil {
+	pointer, errCode := ParseJSONPointer(op.Path)
+	if errCode != POINTER_OK {
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.Path,
-			Message:   fmt.Sprintf("无效的 JSON Pointer: %v", err),
+			Message:   fmt.Sprintf("无效的 JSON Pointer: %s", errCode.Error()),
 		}
 	}
 
-	// 添加值
-	return Add(doc, pointer, op.Value)
+	// 使用 Insert 方法
+	if errCode = pointer.Insert(doc, op.Value); errCode != POINTER_OK {
+		return &PatchError{
+			Operation: op.Op,
+			Path:      op.Path,
+			Message:   fmt.Sprintf("添加操作失败: %s", errCode.Error()),
+		}
+	}
+	return nil
 }
 
 // applyRemoveOperation 实现 remove 操作
 func applyRemoveOperation(doc *Value, op *PatchOperation) error {
 	// 解析 JSON Pointer
-	pointer, err := NewJSONPointer(op.Path)
-	if err != nil {
+	pointer, errCode := ParseJSONPointer(op.Path)
+	if errCode != POINTER_OK {
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.Path,
-			Message:   fmt.Sprintf("无效的 JSON Pointer: %v", err),
+			Message:   fmt.Sprintf("无效的 JSON Pointer: %s", errCode.Error()),
 		}
 	}
 
 	// 移除值
-	return Remove(doc, pointer)
+	if errCode = pointer.Remove(doc); errCode != POINTER_OK {
+		return &PatchError{
+			Operation: op.Op,
+			Path:      op.Path,
+			Message:   fmt.Sprintf("移除操作失败: %s", errCode.Error()),
+		}
+	}
+	return nil
 }
 
 // applyReplaceOperation 实现 replace 操作
 func applyReplaceOperation(doc *Value, op *PatchOperation) error {
-	// replace 可以实现为 remove 然后 add
-	if err := applyRemoveOperation(doc, op); err != nil {
-		return err
+	// 解析 JSON Pointer
+	pointer, errCode := ParseJSONPointer(op.Path)
+	if errCode != POINTER_OK {
+		return &PatchError{Operation: op.Op, Path: op.Path, Message: fmt.Sprintf("无效的 JSON Pointer: %s", errCode.Error())}
 	}
-	return applyAddOperation(doc, op)
+
+	// 尝试获取当前值，确保路径有效 (RFC 6902 要求替换目标必须存在)
+	_, getErrCode := pointer.Get(doc)
+	if getErrCode != POINTER_OK {
+		return &PatchError{Operation: op.Op, Path: op.Path, Message: fmt.Sprintf("替换目标不存在: %s", getErrCode.Error())}
+	}
+
+	// 使用 Replace 方法
+	setErrCode := pointer.Replace(doc, op.Value)
+	if setErrCode != POINTER_OK {
+		return &PatchError{Operation: op.Op, Path: op.Path, Message: fmt.Sprintf("替换操作失败: %s", setErrCode.Error())}
+	}
+	return nil
 }
 
 // applyMoveOperation 实现 move 操作
 func applyMoveOperation(doc *Value, op *PatchOperation) error {
 	// 解析源路径
-	fromPointer, err := NewJSONPointer(op.From)
-	if err != nil {
+	fromPointer, fromErrCode := ParseJSONPointer(op.From)
+	if fromErrCode != POINTER_OK {
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.From,
-			Message:   fmt.Sprintf("无效的源 JSON Pointer: %v", err),
-		}
-	}
-
-	// 解析目标路径
-	toPointer, err := NewJSONPointer(op.Path)
-	if err != nil {
-		return &PatchError{
-			Operation: op.Op,
-			Path:      op.Path,
-			Message:   fmt.Sprintf("无效的目标 JSON Pointer: %v", err),
-		}
-	}
-
-	// 检查源路径是否是目标路径的前缀 (不能移动到自己的子节点)
-	if isPrefix(op.From, op.Path) {
-		return &PatchError{
-			Operation: op.Op,
-			Path:      op.Path,
-			Message:   "不能移动节点到其子节点",
+			Message:   fmt.Sprintf("无效的源 JSON Pointer: %s", fromErrCode.Error()),
 		}
 	}
 
 	// 获取要移动的值
-	value, err := Resolve(doc, fromPointer)
-	if err != nil {
+	valueToMove, getErrCode := fromPointer.Get(doc)
+	if getErrCode != POINTER_OK {
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.From,
-			Message:   fmt.Sprintf("无法解析源路径: %v", err),
+			Message:   fmt.Sprintf("移动源不存在: %s", getErrCode.Error()),
 		}
 	}
 
-	// 复制值
-	tempValue := &Value{}
-	Copy(tempValue, value)
+	// 创建值的副本以防在移除和添加过程中出现问题
+	copiedValue := &Value{}
+	Copy(copiedValue, valueToMove)
 
-	// 删除源位置的值
-	if err := Remove(doc, fromPointer); err != nil {
-		return err
+	// 移除源位置的值
+	if removeErrCode := fromPointer.Remove(doc); removeErrCode != POINTER_OK {
+		return &PatchError{
+			Operation: op.Op,
+			Path:      op.From,
+			Message:   fmt.Sprintf("移除移动源失败: %s", removeErrCode.Error()),
+		}
 	}
 
-	// 添加到目标位置
-	return Add(doc, toPointer, tempValue)
+	// 解析目标路径
+	toPointer, toErrCode := ParseJSONPointer(op.Path)
+	if toErrCode != POINTER_OK {
+		return &PatchError{
+			Operation: op.Op,
+			Path:      op.Path,
+			Message:   fmt.Sprintf("无效的目标 JSON Pointer: %s", toErrCode.Error()),
+		}
+	}
+
+	// 将复制的值添加到目标位置 (根据 RFC 语义，使用 Insert)
+	if setErrCode := toPointer.Insert(doc, copiedValue); setErrCode != POINTER_OK {
+		return &PatchError{
+			Operation: op.Op,
+			Path:      op.Path,
+			Message:   fmt.Sprintf("添加移动值到目标失败: %s", setErrCode.Error()),
+		}
+	}
+
+	return nil
 }
 
 // applyCopyOperation 实现 copy 操作
 func applyCopyOperation(doc *Value, op *PatchOperation) error {
 	// 解析源路径
-	fromPointer, err := NewJSONPointer(op.From)
-	if err != nil {
+	fromPointer, fromErrCode := ParseJSONPointer(op.From)
+	if fromErrCode != POINTER_OK {
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.From,
-			Message:   fmt.Sprintf("无效的源 JSON Pointer: %v", err),
-		}
-	}
-
-	// 解析目标路径
-	toPointer, err := NewJSONPointer(op.Path)
-	if err != nil {
-		return &PatchError{
-			Operation: op.Op,
-			Path:      op.Path,
-			Message:   fmt.Sprintf("无效的目标 JSON Pointer: %v", err),
+			Message:   fmt.Sprintf("无效的源 JSON Pointer: %s", fromErrCode.Error()),
 		}
 	}
 
 	// 获取要复制的值
-	value, err := Resolve(doc, fromPointer)
-	if err != nil {
+	valueToCopy, getErrCode := fromPointer.Get(doc)
+	if getErrCode != POINTER_OK {
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.From,
-			Message:   fmt.Sprintf("无法解析源路径: %v", err),
+			Message:   fmt.Sprintf("复制源不存在: %s", getErrCode.Error()),
 		}
 	}
 
-	// 复制值
-	tempValue := &Value{}
-	Copy(tempValue, value)
+	// 创建值的副本
+	copiedValue := &Value{}
+	Copy(copiedValue, valueToCopy)
 
-	// 添加到目标位置
-	return Add(doc, toPointer, tempValue)
+	// 解析目标路径
+	toPointer, toErrCode := ParseJSONPointer(op.Path)
+	if toErrCode != POINTER_OK {
+		return &PatchError{
+			Operation: op.Op,
+			Path:      op.Path,
+			Message:   fmt.Sprintf("无效的目标 JSON Pointer: %s", toErrCode.Error()),
+		}
+	}
+
+	// 将复制的值添加到目标位置 (使用 Insert 语义)
+	if setErrCode := toPointer.Insert(doc, copiedValue); setErrCode != POINTER_OK {
+		return &PatchError{
+			Operation: op.Op,
+			Path:      op.Path,
+			Message:   fmt.Sprintf("添加到目标位置失败: %s", setErrCode.Error()),
+		}
+	}
+
+	return nil
 }
 
 // applyTestOperation 实现 test 操作
 func applyTestOperation(doc *Value, op *PatchOperation) error {
 	// 解析 JSON Pointer
-	pointer, err := NewJSONPointer(op.Path)
-	if err != nil {
+	pointer, errCode := ParseJSONPointer(op.Path)
+	if errCode != POINTER_OK {
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.Path,
-			Message:   fmt.Sprintf("无效的 JSON Pointer: %v", err),
+			Message:   fmt.Sprintf("无效的 JSON Pointer: %s", errCode.Error()),
 		}
 	}
 
-	// 获取要测试的值
-	value, err := Resolve(doc, pointer)
-	if err != nil {
+	// 获取目标路径的值
+	targetValue, getErrCode := pointer.Get(doc)
+	if getErrCode != POINTER_OK {
+		// 如果 test 操作的值是 null，并且目标路径不存在，则测试通过
+		// （RFC 6902 中对此情况的处理有歧义，这里采用一种常见解释：目标不存在不等于null）
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.Path,
-			Message:   fmt.Sprintf("无法解析路径: %v", err),
+			Message:   fmt.Sprintf("测试目标不存在: %s", getErrCode.Error()),
 		}
 	}
 
-	// 检查值是否相等
-	if !Equal(value, op.Value) {
+	// 比较目标值和操作中的值是否深度相等
+	if !Equal(targetValue, op.Value) {
+		targetStr, _ := Stringify(targetValue)
+		valueStr, _ := Stringify(op.Value)
 		return &PatchError{
 			Operation: op.Op,
 			Path:      op.Path,
-			Message:   "测试失败: 值不相等",
+			Message:   fmt.Sprintf("测试失败：目标值 %s 不等于预期值 %s", targetStr, valueStr),
 		}
 	}
 
@@ -356,227 +400,188 @@ func applyTestOperation(doc *Value, op *PatchOperation) error {
 
 // isValidOperation 检查操作类型是否有效
 func isValidOperation(op string) bool {
-	validOps := map[string]bool{
-		"add":     true,
-		"remove":  true,
-		"replace": true,
-		"move":    true,
-		"copy":    true,
-		"test":    true,
+	switch op {
+	case "add", "remove", "replace", "move", "copy", "test":
+		return true
+	default:
+		return false
 	}
-	return validOps[op]
-}
-
-// isPrefix 检查 path1 是否是 path2 的前缀
-func isPrefix(path1, path2 string) bool {
-	// 格式化路径，确保它们都以 '/' 开头
-	if !strings.HasPrefix(path1, "/") {
-		path1 = "/" + path1
-	}
-	if !strings.HasPrefix(path2, "/") {
-		path2 = "/" + path2
-	}
-
-	// 检查 path2 是否以 path1 开头
-	return path2 != path1 && strings.HasPrefix(path2, path1)
 }
 
 // CreatePatch 生成从 source 到 target 的 JSON Patch
-func CreatePatch(source, target *Value) *JSONPatch {
-	patch := &JSONPatch{
-		Operations: []PatchOperation{},
-	}
-
-	// 使用 JSON 指针 "/" 表示文档根
-	rootPointer, _ := NewJSONPointer("")
-
-	// 递归比较两个文档
-	compareValues(source, target, rootPointer, patch)
-
-	return patch
+func CreatePatch(source, target *Value) (*JSONPatch, error) {
+	patch := &JSONPatch{Operations: make([]PatchOperation, 0)}
+	diff(source, target, "", patch)
+	return patch, nil
 }
 
-// compareValues 递归比较两个 JSON 值，并生成对应的补丁操作
-func compareValues(source, target *Value, pointer *JSONPointer, patch *JSONPatch) {
-	// 如果类型不同，直接替换
-	if source.Type != target.Type {
-		addReplacePatchOperation(source, target, pointer, patch)
+// diff 递归比较两个值并生成 patch 操作
+func diff(source, target *Value, path string, patch *JSONPatch) {
+	// 如果源和目标完全相同，则无需操作
+	if Equal(source, target) {
 		return
 	}
 
-	// 根据类型进行比较
-	switch source.Type {
-	case NULL, TRUE, FALSE:
-		// 对于基本类型，只需检查是否相等
-		if source.Type != target.Type {
-			addReplacePatchOperation(source, target, pointer, patch)
-		}
-	case NUMBER:
-		// 比较数值
-		if source.N != target.N {
-			addReplacePatchOperation(source, target, pointer, patch)
-		}
-	case STRING:
-		// 比较字符串
-		if source.S != target.S {
-			addReplacePatchOperation(source, target, pointer, patch)
-		}
+	// 如果源不存在 (或者类型不同，视为替换)
+	if source == nil || source.Type != target.Type {
+		// 添加 replace 操作
+		copiedTarget := &Value{}
+		Copy(copiedTarget, target)
+		patch.Operations = append(patch.Operations, PatchOperation{
+			Op:    "replace",
+			Path:  path,
+			Value: copiedTarget,
+		})
+		return
+	}
+
+	switch target.Type {
 	case ARRAY:
-		compareArrays(source, target, pointer, patch)
+		diffArray(source, target, path, patch)
 	case OBJECT:
-		compareObjects(source, target, pointer, patch)
+		diffObject(source, target, path, patch)
+	default:
+		// 对于基本类型 (null, bool, number, string)，如果类型相同但不相等，则替换
+		copiedTarget := &Value{}
+		Copy(copiedTarget, target)
+		patch.Operations = append(patch.Operations, PatchOperation{
+			Op:    "replace",
+			Path:  path,
+			Value: copiedTarget,
+		})
 	}
 }
 
-// compareArrays 比较两个数组，并生成对应的补丁操作
-func compareArrays(source, target *Value, pointer *JSONPointer, patch *JSONPatch) {
-	sourceLen := len(source.A)
-	targetLen := len(target.A)
-
-	// 使用最长公共子序列算法会更高效，但这里我们使用简单的方法
-	// 1. 先比较数组中的共同元素
-	minLen := sourceLen
-	if targetLen < sourceLen {
-		minLen = targetLen
+// diffArray 比较两个数组并生成 patch 操作
+func diffArray(source, target *Value, path string, patch *JSONPatch) {
+	// 比较每个元素
+	maxLen := len(source.A)
+	if len(target.A) > maxLen {
+		maxLen = len(target.A)
 	}
 
-	// 比较共同部分
-	for i := 0; i < minLen; i++ {
-		childPointer := extendPointer(pointer, strconv.Itoa(i))
-		compareValues(source.A[i], target.A[i], childPointer, patch)
-	}
-
-	// 2. 处理数组长度变化
-	if sourceLen > targetLen {
-		// 需要删除多余的元素
-		// 注意：从后向前删除，避免索引变化问题
-		for i := sourceLen - 1; i >= targetLen; i-- {
-			childPointer := extendPointer(pointer, strconv.Itoa(i))
-			addRemovePatchOperation(childPointer, patch)
+	for i := 0; i < maxLen; i++ {
+		itemPath := fmt.Sprintf("%s/%d", path, i)
+		var srcItem, tgtItem *Value
+		if i < len(source.A) {
+			srcItem = source.A[i]
 		}
-	} else if targetLen > sourceLen {
-		// 需要添加新元素
-		for i := sourceLen; i < targetLen; i++ {
-			childPointer := extendPointer(pointer, strconv.Itoa(i))
-			addAddPatchOperation(target.A[i], childPointer, patch)
+		if i < len(target.A) {
+			tgtItem = target.A[i]
+		}
+
+		if srcItem == nil && tgtItem != nil {
+			// target 中有，source 中没有 -> add
+			copiedItem := &Value{}
+			Copy(copiedItem, tgtItem)
+			patch.Operations = append(patch.Operations, PatchOperation{
+				Op:    "add",
+				Path:  itemPath,
+				Value: copiedItem,
+			})
+		} else if srcItem != nil && tgtItem == nil {
+			// source 中有，target 中没有 -> remove (需要从后向前移除避免索引变化)
+			// 这个逻辑在 diff 函数外处理，先标记为需要移除
+			// (优化：这里可以直接添加 remove 操作，但在循环中移除会改变索引)
+		} else if srcItem != nil && tgtItem != nil {
+			// 两边都有，递归比较
+			diff(srcItem, tgtItem, itemPath, patch)
+		}
+	}
+
+	// 处理 source 中多余的元素 (需要从后向前移除)
+	if len(source.A) > len(target.A) {
+		for i := len(source.A) - 1; i >= len(target.A); i-- {
+			itemPath := fmt.Sprintf("%s/%d", path, i)
+			patch.Operations = append(patch.Operations, PatchOperation{
+				Op:   "remove",
+				Path: itemPath,
+			})
 		}
 	}
 }
 
-// compareObjects 比较两个对象，并生成对应的补丁操作
-func compareObjects(source, target *Value, pointer *JSONPointer, patch *JSONPatch) {
-	// 创建源对象的键映射，用于快速查找
-	sourceKeys := make(map[string]struct{})
-	sourceValues := make(map[string]*Value)
-
-	for _, member := range source.M {
-		sourceKeys[member.K] = struct{}{}
-		sourceValues[member.K] = member.V
+// diffObject 比较两个对象并生成 patch 操作
+func diffObject(source, target *Value, path string, patch *JSONPatch) {
+	sourceKeys := make(map[string]*Value)
+	for _, m := range source.O {
+		sourceKeys[m.K] = m.V
 	}
 
-	// 创建目标对象的键映射
-	targetKeys := make(map[string]struct{})
+	targetKeys := make(map[string]*Value)
+	for _, m := range target.O {
+		targetKeys[m.K] = m.V
+	}
 
-	// 1. 检查目标对象的每个键
-	for _, member := range target.M {
-		targetKeys[member.K] = struct{}{}
-
-		childPointer := extendPointer(pointer, member.K)
-
-		// 键在源对象中存在
-		if sourceValue, ok := sourceValues[member.K]; ok {
-			// 比较值
-			compareValues(sourceValue, member.V, childPointer, patch)
+	// 检查 target 中的键
+	for key, tgtVal := range targetKeys {
+		keyPath := fmt.Sprintf("%s/%s", path, escapeJSONPointerToken(key))
+		if srcVal, exists := sourceKeys[key]; exists {
+			// 如果键在 source 和 target 中都存在，递归比较值
+			diff(srcVal, tgtVal, keyPath, patch)
 		} else {
-			// 键在源对象中不存在，需要添加
-			addAddPatchOperation(member.V, childPointer, patch)
+			// 如果键只在 target 中存在 -> add
+			copiedVal := &Value{}
+			Copy(copiedVal, tgtVal)
+			patch.Operations = append(patch.Operations, PatchOperation{
+				Op:    "add",
+				Path:  keyPath,
+				Value: copiedVal,
+			})
 		}
 	}
 
-	// 2. 检查源对象中存在但目标对象中不存在的键（需要删除）
-	for _, member := range source.M {
-		if _, ok := targetKeys[member.K]; !ok {
-			// 键在目标对象中不存在，需要删除
-			childPointer := extendPointer(pointer, member.K)
-			addRemovePatchOperation(childPointer, patch)
+	// 检查 source 中的键，如果 target 中不存在 -> remove
+	for key := range sourceKeys {
+		if _, exists := targetKeys[key]; !exists {
+			keyPath := fmt.Sprintf("%s/%s", path, escapeJSONPointerToken(key))
+			patch.Operations = append(patch.Operations, PatchOperation{
+				Op:   "remove",
+				Path: keyPath,
+			})
 		}
 	}
-}
-
-// 辅助函数：扩展 JSON 指针
-func extendPointer(pointer *JSONPointer, token string) *JSONPointer {
-	tokens := append([]string{}, pointer.Tokens...)
-	tokens = append(tokens, token)
-	return &JSONPointer{Tokens: tokens}
-}
-
-// 辅助函数：添加 replace 操作
-func addReplacePatchOperation(source, target *Value, pointer *JSONPointer, patch *JSONPatch) {
-	pointerStr := pointer.String()
-
-	// 如果是空路径，我们不能使用 replace，需要完全替换文档
-	if pointerStr == "" {
-		// 对于根路径，使用 /
-		pointerStr = "/"
-	}
-
-	patch.Operations = append(patch.Operations, PatchOperation{
-		Op:    "replace",
-		Path:  pointerStr,
-		Value: target,
-	})
-}
-
-// 辅助函数：添加 add 操作
-func addAddPatchOperation(value *Value, pointer *JSONPointer, patch *JSONPatch) {
-	patch.Operations = append(patch.Operations, PatchOperation{
-		Op:    "add",
-		Path:  pointer.String(),
-		Value: value,
-	})
-}
-
-// 辅助函数：添加 remove 操作
-func addRemovePatchOperation(pointer *JSONPointer, patch *JSONPatch) {
-	patch.Operations = append(patch.Operations, PatchOperation{
-		Op:   "remove",
-		Path: pointer.String(),
-	})
 }
 
 // String 返回 JSON Patch 的字符串表示
 func (p *JSONPatch) String() (string, error) {
-	// 创建一个 JSON 数组
-	patchDoc := &Value{}
-	SetArray(patchDoc, len(p.Operations))
+	patchDoc := &Value{Type: ARRAY, A: make([]*Value, 0, len(p.Operations))}
 
-	// 添加每个操作
 	for _, op := range p.Operations {
-		// 创建操作对象
-		opObj := PushBackArrayElement(patchDoc)
-		SetObject(opObj)
+		opVal := &Value{}
+		SetObject(opVal)
 
-		// 添加 op 字段
-		opField := SetObjectValue(opObj, "op")
-		SetString(opField, op.Op)
+		// 设置 op
+		SetString(SetObjectValue(opVal, "op"), op.Op)
+		// 设置 path
+		SetString(SetObjectValue(opVal, "path"), op.Path)
 
-		// 添加 path 字段
-		pathField := SetObjectValue(opObj, "path")
-		SetString(pathField, op.Path)
-
-		// 对于 move 和 copy 操作，添加 from 字段
 		if op.Op == "move" || op.Op == "copy" {
-			fromField := SetObjectValue(opObj, "from")
-			SetString(fromField, op.From)
+			SetString(SetObjectValue(opVal, "from"), op.From)
 		}
 
-		// 对于 add, replace 和 test 操作，添加 value 字段
 		if op.Op == "add" || op.Op == "replace" || op.Op == "test" {
-			valueField := SetObjectValue(opObj, "value")
-			Copy(valueField, op.Value)
+			valueCopy := &Value{}
+			Copy(valueCopy, op.Value) // 复制一份值
+			// SetObjectValue 返回的是指向新（或现有）Value 的指针，需要用 Copy 赋值
+			Copy(SetObjectValue(opVal, "value"), valueCopy)
 		}
+
+		patchDoc.A = append(patchDoc.A, opVal)
 	}
 
-	// 将 JSON 数组转换为字符串
-	return Stringify(patchDoc)
+	// return Stringify(patchDoc)
+	s, errCode := Stringify(patchDoc)
+	if errCode != STRINGIFY_OK {
+		// StringifyError 实现了 error 接口，可以直接返回
+		return "", errCode
+	}
+	return s, nil // 成功时返回 nil error
+}
+
+// escapeJSONPointerToken 转义 JSON Pointer token 中的特殊字符
+func escapeJSONPointerToken(token string) string {
+	escaped := strings.ReplaceAll(token, "~", "~0")
+	escaped = strings.ReplaceAll(escaped, "/", "~1")
+	return escaped
 }
