@@ -1,54 +1,64 @@
-package tutorial14
+package leptjson
 
 import (
-	"encoding/json"
-	"fmt"
-	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestNewJSONMergePatch(t *testing.T) {
 	tests := []struct {
-		name     string
-		document interface{}
-		wantErr  bool
+		name         string
+		documentJSON string
+		wantErr      bool
 	}{
 		{
-			name:     "空补丁",
-			document: map[string]interface{}{},
-			wantErr:  false,
+			name:         "空对象补丁",
+			documentJSON: `{}`,
+			wantErr:      false,
 		},
 		{
-			name: "简单补丁",
-			document: map[string]interface{}{
+			name: "简单对象补丁",
+			documentJSON: `{
 				"foo": "bar",
-				"baz": map[string]interface{}{
-					"qux": 123,
-				},
-			},
+				"baz": {
+					"qux": 123
+				}
+			}`,
 			wantErr: false,
 		},
 		{
-			name:     "含null的补丁",
-			document: map[string]interface{}{"foo": nil},
-			wantErr:  false,
+			name:         "含null的补丁",
+			documentJSON: `{"foo": null}`,
+			wantErr:      false,
 		},
 		{
-			name:     "无效JSON类型",
-			document: func() {},
-			wantErr:  true,
+			name:         "非对象或null补丁 (也有效)",
+			documentJSON: `"a string patch"`,
+			wantErr:      false,
+		},
+		{
+			name:         "数组补丁 (也有效)",
+			documentJSON: `[1, 2, 3]`,
+			wantErr:      false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewJSONMergePatch(tt.document)
+			documentVal := &Value{}
+			if errCode := Parse(documentVal, tt.documentJSON); errCode != PARSE_OK {
+				t.Fatalf("解析文档失败: %s", errCode.Error())
+			}
+
+			got, err := NewJSONMergePatch(documentVal)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewJSONMergePatch() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if err == nil && !reflect.DeepEqual(got.Document, tt.document) {
-				t.Errorf("NewJSONMergePatch() got = %v, want %v", got.Document, tt.document)
+			if err == nil && !Equal(got.Document, documentVal) {
+				gotStr, _ := Stringify(got.Document)
+				wantStr, _ := Stringify(documentVal)
+				t.Errorf("NewJSONMergePatch() got = %s, want %s", gotStr, wantStr)
 			}
 		})
 	}
@@ -56,129 +66,122 @@ func TestNewJSONMergePatch(t *testing.T) {
 
 func TestApplyMergePatch(t *testing.T) {
 	tests := []struct {
-		name        string
-		target      string
-		patch       string
-		expected    string
-		expectError bool
+		name                string
+		targetJSON          string
+		patchJSON           string
+		expectedJSON        string
+		expectError         bool
+		expectErrorContains string
 	}{
 		{
-			name:        "添加属性",
-			target:      `{"foo": "bar"}`,
-			patch:       `{"baz": "qux"}`,
-			expected:    `{"foo": "bar", "baz": "qux"}`,
-			expectError: false,
+			name:         "添加属性",
+			targetJSON:   `{"foo": "bar"}`,
+			patchJSON:    `{"baz": "qux"}`,
+			expectedJSON: `{"foo": "bar", "baz": "qux"}`,
 		},
 		{
-			name:        "修改属性",
-			target:      `{"foo": "bar"}`,
-			patch:       `{"foo": "qux"}`,
-			expected:    `{"foo": "qux"}`,
-			expectError: false,
+			name:         "修改属性",
+			targetJSON:   `{"foo": "bar"}`,
+			patchJSON:    `{"foo": "qux"}`,
+			expectedJSON: `{"foo": "qux"}`,
 		},
 		{
-			name:        "删除属性",
-			target:      `{"foo": "bar", "baz": "qux"}`,
-			patch:       `{"baz": null}`,
-			expected:    `{"foo": "bar"}`,
-			expectError: false,
+			name:         "删除属性",
+			targetJSON:   `{"foo": "bar", "baz": "qux"}`,
+			patchJSON:    `{"baz": null}`,
+			expectedJSON: `{"foo": "bar"}`,
 		},
 		{
-			name:        "递归合并对象",
-			target:      `{"foo": {"bar": "baz", "qux": "quux"}}`,
-			patch:       `{"foo": {"bar": "updated"}}`,
-			expected:    `{"foo": {"bar": "updated", "qux": "quux"}}`,
-			expectError: false,
+			name:         "递归合并对象",
+			targetJSON:   `{"foo": {"bar": "baz", "qux": "quux"}}`,
+			patchJSON:    `{"foo": {"bar": "updated"}}`,
+			expectedJSON: `{"foo": {"bar": "updated", "qux": "quux"}}`,
 		},
 		{
-			name:        "递归删除嵌套属性",
-			target:      `{"foo": {"bar": "baz", "qux": "quux"}}`,
-			patch:       `{"foo": {"qux": null}}`,
-			expected:    `{"foo": {"bar": "baz"}}`,
-			expectError: false,
+			name:         "递归删除嵌套属性",
+			targetJSON:   `{"foo": {"bar": "baz", "qux": "quux"}}`,
+			patchJSON:    `{"foo": {"qux": null}}`,
+			expectedJSON: `{"foo": {"bar": "baz"}}`,
 		},
 		{
-			name:        "替换数组",
-			target:      `{"foo": ["bar", "baz"]}`,
-			patch:       `{"foo": ["qux", "quux"]}`,
-			expected:    `{"foo": ["qux", "quux"]}`,
-			expectError: false,
+			name:         "替换数组",
+			targetJSON:   `{"foo": ["bar", "baz"]}`,
+			patchJSON:    `{"foo": ["qux", "quux"]}`,
+			expectedJSON: `{"foo": ["qux", "quux"]}`,
 		},
 		{
-			name:        "替换整个对象为数组",
-			target:      `{"foo": {"bar": "baz"}}`,
-			patch:       `{"foo": ["qux", "quux"]}`,
-			expected:    `{"foo": ["qux", "quux"]}`,
-			expectError: false,
+			name:         "替换整个对象为数组",
+			targetJSON:   `{"foo": {"bar": "baz"}}`,
+			patchJSON:    `{"foo": ["qux", "quux"]}`,
+			expectedJSON: `{"foo": ["qux", "quux"]}`,
 		},
 		{
-			name:        "复杂示例 - 混合操作",
-			target:      `{"title": "Hello", "author": {"name": "John Doe", "email": "john@example.com"}, "tags": ["news", "tech"], "views": 100}`,
-			patch:       `{"title": "Hello World", "author": {"email": null}, "tags": ["news", "technology"], "views": null, "comments": 10}`,
-			expected:    `{"title": "Hello World", "author": {"name": "John Doe"}, "tags": ["news", "technology"], "comments": 10}`,
-			expectError: false,
+			name:         "复杂示例 - 混合操作",
+			targetJSON:   `{"title": "Hello", "author": {"name": "John Doe", "email": "john@example.com"}, "tags": ["news", "tech"], "views": 100}`,
+			patchJSON:    `{"title": "Hello World", "author": {"email": null}, "tags": ["news", "technology"], "views": null, "comments": 10}`,
+			expectedJSON: `{"title": "Hello World", "author": {"name": "John Doe"}, "tags": ["news", "technology"], "comments": 10}`,
 		},
 		{
-			name:        "空补丁不修改文档",
-			target:      `{"foo": "bar"}`,
-			patch:       `{}`,
-			expected:    `{"foo": "bar"}`,
-			expectError: false,
+			name:         "空补丁不修改文档",
+			targetJSON:   `{"foo": "bar"}`,
+			patchJSON:    `{}`,
+			expectedJSON: `{"foo": "bar"}`,
 		},
 		{
-			name:        "补丁为null",
-			target:      `{"foo": "bar"}`,
-			patch:       `null`,
-			expected:    `null`,
-			expectError: false,
+			name:         "补丁为null",
+			targetJSON:   `{"foo": "bar"}`,
+			patchJSON:    `null`,
+			expectedJSON: `null`,
 		},
 		{
-			name:        "目标为null",
-			target:      `null`,
-			patch:       `{"foo": "bar"}`,
-			expected:    `{"foo": "bar"}`,
-			expectError: false,
+			name:         "目标为null",
+			targetJSON:   `null`,
+			patchJSON:    `{"foo": "bar"}`,
+			expectedJSON: `{"foo": "bar"}`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 解析测试数据
-			var targetObj interface{}
-			err := json.Unmarshal([]byte(tt.target), &targetObj)
-			if err != nil {
-				t.Fatalf("解析目标文档失败: %v", err)
+			targetVal := &Value{}
+			if errCode := Parse(targetVal, tt.targetJSON); errCode != PARSE_OK {
+				t.Fatalf("解析目标文档失败: %s", errCode.Error())
 			}
 
-			var patchObj interface{}
-			err = json.Unmarshal([]byte(tt.patch), &patchObj)
-			if err != nil {
-				t.Fatalf("解析补丁文档失败: %v", err)
+			patchVal := &Value{}
+			if errCode := Parse(patchVal, tt.patchJSON); errCode != PARSE_OK {
+				t.Fatalf("解析补丁文档失败: %s", errCode.Error())
 			}
 
-			var expectedObj interface{}
-			err = json.Unmarshal([]byte(tt.expected), &expectedObj)
-			if err != nil {
-				t.Fatalf("解析期望结果失败: %v", err)
+			expectedVal := &Value{}
+			if errCode := Parse(expectedVal, tt.expectedJSON); errCode != PARSE_OK {
+				t.Fatalf("解析期望结果失败: %s", errCode.Error())
 			}
 
-			// 创建并应用补丁
-			patch, err := NewJSONMergePatch(patchObj)
+			patch, err := NewJSONMergePatch(patchVal)
 			if err != nil {
 				t.Fatalf("创建补丁失败: %v", err)
 			}
 
-			result, err := patch.Apply(targetObj)
-			if (err != nil) != tt.expectError {
-				t.Errorf("Apply() error = %v, expectError %v", err, tt.expectError)
-				return
-			}
+			resultVal, applyErr := patch.Apply(targetVal)
 
-			// 验证结果
-			if !reflect.DeepEqual(result, expectedObj) {
-				resultStr, _ := json.Marshal(result)
-				expectedStr, _ := json.Marshal(expectedObj)
-				t.Errorf("Apply() 结果不匹配\n预期: %s\n实际: %s", expectedStr, resultStr)
+			if tt.expectError {
+				if applyErr == nil {
+					t.Errorf("Apply() 期望错误但没有得到错误")
+				}
+				if tt.expectErrorContains != "" && (applyErr == nil || !strings.Contains(applyErr.Error(), tt.expectErrorContains)) {
+					t.Errorf("Apply() 错误信息 %q 不包含期望的 %q", applyErr, tt.expectErrorContains)
+				}
+			} else {
+				if applyErr != nil {
+					t.Errorf("Apply() 期望成功但得到错误: %v", applyErr)
+					return
+				}
+				if !Equal(resultVal, expectedVal) {
+					resultStr, _ := Stringify(resultVal)
+					expectedStr, _ := Stringify(expectedVal)
+					t.Errorf("Apply() 结果不匹配\n预期: %s\n实际: %s", expectedStr, resultStr)
+				}
 			}
 		})
 	}
@@ -186,53 +189,51 @@ func TestApplyMergePatch(t *testing.T) {
 
 func TestJSONMergePatchString(t *testing.T) {
 	tests := []struct {
-		name     string
-		document interface{}
-		want     string
-		wantErr  bool
+		name         string
+		documentJSON string
+		want         string
+		wantErr      bool
 	}{
 		{
-			name:     "Null Patch",
-			document: nil,
-			want:     "null",
-			wantErr:  false,
+			name:         "Null Patch",
+			documentJSON: `null`,
+			want:         "null",
+			wantErr:      false,
 		},
 		{
-			name: "Simple Patch",
-			document: map[string]interface{}{
-				"foo": "bar",
-			},
-			want:    `{"foo":"bar"}`,
-			wantErr: false,
+			name:         "Empty Object Patch",
+			documentJSON: `{}`,
+			want:         "{}",
+			wantErr:      false,
 		},
 		{
-			name: "Complex Patch",
-			document: map[string]interface{}{
-				"foo": "bar",
-				"baz": map[string]interface{}{
-					"qux":   123,
-					"array": []interface{}{1, 2, 3},
-				},
-			},
-			want:    `{"baz":{"array":[1,2,3],"qux":123},"foo":"bar"}`,
-			wantErr: false,
+			name:         "Simple Object Patch",
+			documentJSON: `{"a": 1, "b": "hello"}`,
+			want:         `{"a":1,"b":"hello"}`,
+			wantErr:      false,
+		},
+		{
+			name:         "String Patch",
+			documentJSON: `"patch string"`,
+			want:         `"patch string"`,
+			wantErr:      false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &JSONMergePatch{Document: tt.document}
+			documentVal := &Value{}
+			if errCode := Parse(documentVal, tt.documentJSON); errCode != PARSE_OK {
+				t.Fatalf("解析文档失败: %s", errCode.Error())
+			}
+
+			p := &JSONMergePatch{Document: documentVal}
 			got, err := p.String()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("String() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			// 标准化 JSON 字符串进行比较
-			var gotObj, wantObj interface{}
-			json.Unmarshal([]byte(got), &gotObj)
-			json.Unmarshal([]byte(tt.want), &wantObj)
-
-			if !reflect.DeepEqual(gotObj, wantObj) {
+			if got != tt.want {
 				t.Errorf("String() = %v, want %v", got, tt.want)
 			}
 		})
@@ -241,111 +242,108 @@ func TestJSONMergePatchString(t *testing.T) {
 
 func TestCreateMergePatch(t *testing.T) {
 	tests := []struct {
-		name          string
-		source        string
-		target        string
-		expectedPatch string
-		expectError   bool
+		name              string
+		sourceJSON        string
+		targetJSON        string
+		expectedPatchJSON string
+		expectError       bool
 	}{
 		{
-			name:          "添加属性",
-			source:        `{"foo": "bar"}`,
-			target:        `{"foo": "bar", "baz": "qux"}`,
-			expectedPatch: `{"baz": "qux"}`,
-			expectError:   false,
+			name:              "No Change",
+			sourceJSON:        `{"a": 1}`,
+			targetJSON:        `{"a": 1}`,
+			expectedPatchJSON: `{}`,
 		},
 		{
-			name:          "删除属性",
-			source:        `{"foo": "bar", "baz": "qux"}`,
-			target:        `{"foo": "bar"}`,
-			expectedPatch: `{"baz": null}`,
-			expectError:   false,
+			name:              "Add Property",
+			sourceJSON:        `{"a": 1}`,
+			targetJSON:        `{"a": 1, "b": 2}`,
+			expectedPatchJSON: `{"b": 2}`,
 		},
 		{
-			name:          "修改属性",
-			source:        `{"foo": "bar"}`,
-			target:        `{"foo": "qux"}`,
-			expectedPatch: `{"foo": "qux"}`,
-			expectError:   false,
+			name:              "Remove Property",
+			sourceJSON:        `{"a": 1, "b": 2}`,
+			targetJSON:        `{"a": 1}`,
+			expectedPatchJSON: `{"b": null}`,
 		},
 		{
-			name:          "修改嵌套属性",
-			source:        `{"foo": {"bar": "baz", "qux": "quux"}}`,
-			target:        `{"foo": {"bar": "updated", "qux": "quux"}}`,
-			expectedPatch: `{"foo": {"bar": "updated"}}`,
-			expectError:   false,
+			name:              "Change Property",
+			sourceJSON:        `{"a": 1}`,
+			targetJSON:        `{"a": 2}`,
+			expectedPatchJSON: `{"a": 2}`,
 		},
 		{
-			name:          "删除嵌套属性",
-			source:        `{"foo": {"bar": "baz", "qux": "quux"}}`,
-			target:        `{"foo": {"bar": "baz"}}`,
-			expectedPatch: `{"foo": {"qux": null}}`,
-			expectError:   false,
+			name:              "Nested Change Add",
+			sourceJSON:        `{"a": {"b": 1}}`,
+			targetJSON:        `{"a": {"b": 1, "c": 2}}`,
+			expectedPatchJSON: `{"a": {"c": 2}}`,
 		},
 		{
-			name:          "添加嵌套属性",
-			source:        `{"foo": {"bar": "baz"}}`,
-			target:        `{"foo": {"bar": "baz", "qux": "quux"}}`,
-			expectedPatch: `{"foo": {"qux": "quux"}}`,
-			expectError:   false,
+			name:              "Nested Change Remove",
+			sourceJSON:        `{"a": {"b": 1, "c": 2}}`,
+			targetJSON:        `{"a": {"b": 1}}`,
+			expectedPatchJSON: `{"a": {"c": null}}`,
 		},
 		{
-			name:          "替换数组",
-			source:        `{"foo": ["bar", "baz"]}`,
-			target:        `{"foo": ["qux", "quux"]}`,
-			expectedPatch: `{"foo": ["qux", "quux"]}`,
-			expectError:   false,
+			name:              "Nested Change Modify",
+			sourceJSON:        `{"a": {"b": 1}}`,
+			targetJSON:        `{"a": {"b": 2}}`,
+			expectedPatchJSON: `{"a": {"b": 2}}`,
 		},
 		{
-			name:          "替换类型",
-			source:        `{"foo": {"bar": "baz"}}`,
-			target:        `{"foo": ["qux", "quux"]}`,
-			expectedPatch: `{"foo": ["qux", "quux"]}`,
-			expectError:   false,
+			name:              "Replace Object with Value",
+			sourceJSON:        `{"a": {"b": 1}}`,
+			targetJSON:        `{"a": 2}`,
+			expectedPatchJSON: `{"a": 2}`,
 		},
 		{
-			name:          "目标为null",
-			source:        `{"foo": "bar"}`,
-			target:        `null`,
-			expectedPatch: `null`,
-			expectError:   false,
+			name:              "Replace Value with Object",
+			sourceJSON:        `{"a": 1}`,
+			targetJSON:        `{"a": {"b": 2}}`,
+			expectedPatchJSON: `{"a": {"b": 2}}`,
 		},
 		{
-			name:          "源为null",
-			source:        `null`,
-			target:        `{"foo": "bar"}`,
-			expectedPatch: `{"foo": "bar"}`,
-			expectError:   false,
+			name:              "Replace Array",
+			sourceJSON:        `{"a": [1, 2]}`,
+			targetJSON:        `{"a": [3, 4]}`,
+			expectedPatchJSON: `{"a": [3, 4]}`,
 		},
 		{
-			name:          "复杂示例 - RFC 7396 案例",
-			source:        `{"title": "Hello", "author": {"name": "John Doe", "email": "john@example.com"}, "tags": ["news", "tech"], "views": 100}`,
-			target:        `{"title": "Hello World", "author": {"name": "John Doe"}, "tags": ["news", "technology"], "comments": 10}`,
-			expectedPatch: `{"comments": 10, "tags": ["news", "technology"], "title": "Hello World", "author": {"email": null}, "views": null}`,
-			expectError:   false,
+			name:              "Target is Null",
+			sourceJSON:        `{"a": 1}`,
+			targetJSON:        `null`,
+			expectedPatchJSON: `null`,
+		},
+		{
+			name:              "Source is Null",
+			sourceJSON:        `null`,
+			targetJSON:        `{"a": 1}`,
+			expectedPatchJSON: `{"a": 1}`,
+		},
+		{
+			name:              "Complex Diff",
+			sourceJSON:        `{"title": "Hello", "author": {"name": "John Doe", "email": "john@example.com"}, "tags": ["news", "tech"], "views": 100}`,
+			targetJSON:        `{"title": "Hello World", "author": {"name": "John Doe"}, "tags": ["news", "technology"], "comments": 10}`,
+			expectedPatchJSON: `{"title": "Hello World", "author": {"email": null}, "tags": ["news", "technology"], "views": null, "comments": 10}`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// 解析测试数据
-			var sourceObj interface{}
-			if err := json.Unmarshal([]byte(tt.source), &sourceObj); err != nil {
-				t.Fatalf("解析源文档失败: %v", err)
+			sourceVal := &Value{}
+			if errCode := Parse(sourceVal, tt.sourceJSON); errCode != PARSE_OK {
+				t.Fatalf("解析源文档失败: %s", errCode.Error())
+			}
+			targetVal := &Value{}
+			if errCode := Parse(targetVal, tt.targetJSON); errCode != PARSE_OK {
+				t.Fatalf("解析目标文档失败: %s", errCode.Error())
+			}
+			expectedPatchVal := &Value{}
+			if errCode := Parse(expectedPatchVal, tt.expectedPatchJSON); errCode != PARSE_OK {
+				t.Fatalf("解析期望补丁失败: %s", errCode.Error())
 			}
 
-			var targetObj interface{}
-			if err := json.Unmarshal([]byte(tt.target), &targetObj); err != nil {
-				t.Fatalf("解析目标文档失败: %v", err)
-			}
-
-			var expectedPatchObj interface{}
-			if err := json.Unmarshal([]byte(tt.expectedPatch), &expectedPatchObj); err != nil {
-				t.Fatalf("解析期望补丁失败: %v", err)
-			}
-
-			// 创建补丁
-			patch, err := CreateMergePatch(sourceObj, targetObj)
+			patch, err := CreateMergePatch(sourceVal, targetVal)
 			if (err != nil) != tt.expectError {
 				t.Errorf("CreateMergePatch() error = %v, expectError %v", err, tt.expectError)
 				return
@@ -354,63 +352,23 @@ func TestCreateMergePatch(t *testing.T) {
 				return
 			}
 
-			// 验证生成的补丁
-			patchStr, _ := patch.String()
-			fmt.Printf("生成的补丁: %s\n", patchStr)
-
-			// 标准化 JSON 对象进行深度比较
-			if !reflect.DeepEqual(normalizePatch(patch.Document), normalizePatch(expectedPatchObj)) {
-				expectedPatchStr, _ := json.Marshal(expectedPatchObj)
-				patchStr, _ := json.Marshal(patch.Document)
-				t.Errorf("CreateMergePatch() 补丁不匹配\n预期: %s\n实际: %s", expectedPatchStr, patchStr)
+			if !Equal(patch.Document, expectedPatchVal) {
+				patchStr, _ := patch.String()
+				expectedPatchStr, _ := Stringify(expectedPatchVal)
+				t.Errorf("CreateMergePatch() 生成的补丁不匹配\n预期: %s\n实际: %s", expectedPatchStr, patchStr)
 			}
 
-			// 验证应用补丁后的结果
-			result, err := patch.Apply(sourceObj)
-			if err != nil {
-				t.Errorf("应用生成的补丁失败: %v", err)
+			resultVal, applyErr := patch.Apply(sourceVal)
+			if applyErr != nil {
+				t.Errorf("Apply() 应用补丁时发生意外错误: %v", applyErr)
 				return
 			}
 
-			// 标准化 JSON 对象进行深度比较
-			if !reflect.DeepEqual(normalizePatch(result), normalizePatch(targetObj)) {
-				resultStr, _ := json.Marshal(result)
-				targetStr, _ := json.Marshal(targetObj)
-				t.Errorf("应用生成的补丁后结果不匹配\n预期: %s\n实际: %s", targetStr, resultStr)
+			if !Equal(resultVal, targetVal) {
+				resultStr, _ := Stringify(resultVal)
+				targetStr, _ := Stringify(targetVal)
+				t.Errorf("Apply() 应用补丁后结果不等于目标文档\n目标: %s\n实际: %s", targetStr, resultStr)
 			}
 		})
-	}
-}
-
-// normalizePatch 标准化 JSON 对象，忽略属性顺序和空对象差异
-func normalizePatch(obj interface{}) interface{} {
-	if obj == nil {
-		return nil
-	}
-
-	switch v := obj.(type) {
-	case map[string]interface{}:
-		// 如果是空对象，直接返回
-		if len(v) == 0 {
-			return v
-		}
-
-		// 对所有嵌套对象递归处理
-		result := make(map[string]interface{})
-		for key, value := range v {
-			result[key] = normalizePatch(value)
-		}
-		return result
-
-	case []interface{}:
-		// 处理数组中的每个元素
-		result := make([]interface{}, len(v))
-		for i, item := range v {
-			result[i] = normalizePatch(item)
-		}
-		return result
-
-	default:
-		return obj
 	}
 }
