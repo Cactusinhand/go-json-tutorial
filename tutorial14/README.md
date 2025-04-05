@@ -1,30 +1,103 @@
-# 从零开始的 JSON 库教程（十四）：JSON Merge Patch
+# 从零开始的 JSON 库教程（十四）：JSON Merge Patch 实现
 
 ## JSON Merge Patch 简介
 
-JSON Merge Patch 是一种简单直观的 JSON 文档修改方法，定义在 [RFC 7396](https://tools.ietf.org/html/rfc7396) 中。与 JSON Patch（RFC 6902）相比，它提供了一种更简洁的方式来表示对 JSON 文档的更新操作，特别适用于 HTTP PATCH 请求。
+JSON Merge Patch 是一种用于描述 JSON 文档修改的格式，定义在 [RFC 7396](https://tools.ietf.org/html/rfc7396) 中。与 JSON Patch (RFC 6902) 不同，Merge Patch 提供了一种更简单、更直观的方式来描述对 JSON 文档的修改，特别适用于部分更新（PATCH 请求）。它主要基于以下规则：
 
-JSON Merge Patch 的核心思想是使用一个类似目标文档结构的 JSON 对象来描述修改。修改规则如下：
+*   如果 Patch 是一个对象，它会递归地合并到目标文档中。
+*   如果 Patch 中某个键的值是 `null`，则目标文档中对应的键会被删除。
+*   Patch 中的其他值会直接替换目标文档中的对应值。
+*   如果 Patch 本身不是一个对象，它会完全替换整个目标文档。
 
-1. 如果 Merge Patch 是一个对象，那么对于其中的每个成员：
-   - 如果值为 `null`，从目标文档中删除该成员
-   - 如果值是对象，递归应用上述规则
-   - 其他情况（包括数组），直接替换目标文档中的对应值
+## 主要功能
 
-2. 如果 Merge Patch 不是一个对象（例如是数组、字符串或 `null`），则整个目标文档被替换为该值
-
-## 与 JSON Patch 的比较
-
-| 特性 | JSON Merge Patch | JSON Patch |
-|------|-----------------|------------|
-| 格式 | 单个 JSON 对象 | JSON 数组，包含操作对象 |
-| 操作类型 | 隐含的添加/替换/删除 | 明确的 add/remove/replace/move/copy/test |
-| 数组处理 | 只能替换整个数组 | 可以修改数组中的特定元素 |
-| 表达能力 | 较弱，不支持复杂操作 | 较强，支持复杂的精确操作 |
-| 易用性 | 简单直观 | 相对复杂 |
-| 适用场景 | 简单的文档更新 | 复杂的文档转换 |
+*   **`NewJSONMergePatch(patchData interface{}) (*JSONMergePatch, error)`**: 从 Go 的 `interface{}` (通常是 `map[string]interface{}` 或其他由 JSON 解析得到的数据结构) 创建一个新的 Merge Patch 对象。
+*   **`Apply(targetData interface{}) (interface{}, error)`**: 将 Merge Patch 应用到目标 Go 数据结构上，返回修改后的结果。
+*   **`CreateMergePatch(source, target interface{}) (*JSONMergePatch, error)`**: 对比两个 Go 数据结构，生成一个可以从 `source` 转换到 `target` 的 Merge Patch。
+*   **`String()`**: 将 Merge Patch 对象序列化为 JSON 字符串。
 
 ## 使用示例
+
+```go
+package main
+
+import (
+	"fmt"
+	leptjson "github.com/Cactusinhand/go-json-tutorial/tutorial14"
+	"encoding/json" // 使用标准库 unmarshal 来处理示例数据
+)
+
+func main() {
+	// 示例目标文档
+	originalJSON := `{
+		"title": "原标题",
+		"author": {
+			"name": "作者名",
+			"email": "author@example.com"
+		},
+		"tags": ["original"],
+		"published": true
+	}`
+	var originalDoc interface{}
+	json.Unmarshal([]byte(originalJSON), &originalDoc)
+
+	// 示例 Merge Patch
+	mergePatchJSON := `{ 
+		"title": "更新的标题",
+		"author": {"email": null}, 
+		"tags": ["news", "updated"],
+		"content": "新内容"
+	}`
+	var mergePatchData interface{}
+	json.Unmarshal([]byte(mergePatchJSON), &mergePatchData)
+
+	// 1. 创建并应用 Merge Patch
+	patch, err := leptjson.NewJSONMergePatch(mergePatchData)
+	if err != nil {
+		fmt.Println("创建 Merge Patch 失败:", err)
+		return
+	}
+
+	updatedDoc, err := patch.Apply(originalDoc)
+	if err != nil {
+		fmt.Println("应用 Merge Patch 失败:", err)
+		return
+	}
+
+	updatedJSON, _ := json.MarshalIndent(updatedDoc, "", "  ")
+	fmt.Println("应用 Merge Patch 后的文档:")
+	fmt.Println(string(updatedJSON))
+	/* 输出:
+	{
+	  "author": {
+	    "name": "作者名"
+	  },
+	  "content": "新内容",
+	  "published": true,
+	  "tags": [
+	    "news",
+	    "updated"
+	  ],
+	  "title": "更新的标题"
+	}
+	*/
+
+	// 2. 从两个文档生成 Merge Patch
+	source := map[string]interface{}{"a": 1, "b": map[string]interface{}{"c": 3}}
+	target := map[string]interface{}{"a": 1, "b": map[string]interface{}{"d": 4}}
+
+	diffPatch, err := leptjson.CreateMergePatch(source, target)
+	if err != nil {
+		fmt.Println("生成 Merge Patch 失败:", err)
+		return
+	}
+	diffPatchStr, _ := diffPatch.String()
+	fmt.Println("\n生成的 Merge Patch:", diffPatchStr)
+	// 输出: {"b":{"c":null,"d":4}}
+}
+```
+
+## 具体应用场景
 
 假设我们有以下 JSON 文档：
 
@@ -74,7 +147,7 @@ JSON Merge Patch 的核心思想是使用一个类似目标文档结构的 JSON 
 - `phoneNumber` 被添加
 - `content` 保持不变（因为 Patch 中未提及）
 
-## 实现目标
+## 本章实现目标
 
 在本章中，我们将实现一个符合 RFC 7396 的 JSON Merge Patch 处理器，支持以下功能：
 
@@ -82,7 +155,7 @@ JSON Merge Patch 的核心思想是使用一个类似目标文档结构的 JSON 
 2. 应用 Merge Patch 到 JSON 文档
 3. 生成两个文档之间的差异作为 JSON Merge Patch
 
-## 实现方法
+## 实现计划
 
 我们将创建一个 `JSONMergePatch` 类型，它封装了 JSON Merge Patch 文档并提供以下方法：
 
@@ -95,6 +168,17 @@ JSON Merge Patch 的核心思想是使用一个类似目标文档结构的 JSON 
 - 递归处理嵌套对象
 - 正确处理 `null` 值（用于删除属性）
 - 适当的错误处理和类型检查
+
+## JSON Merge Patch 与 JSON Patch 的比较
+
+| 特性 | JSON Merge Patch | JSON Patch |
+|------|-----------------|------------|
+| 格式 | 单个 JSON 对象 | JSON 数组，包含操作对象 |
+| 操作类型 | 隐含的添加/替换/删除 | 明确的 add/remove/replace/move/copy/test |
+| 数组处理 | 只能替换整个数组 | 可以修改数组中的特定元素 |
+| 表达能力 | 较弱，不支持复杂操作 | 较强，支持复杂的精确操作 |
+| 易用性 | 简单直观 | 相对复杂 |
+| 适用场景 | 简单的文档更新 | 复杂的文档转换 |
 
 ## JSON Merge Patch 的局限性
 
@@ -112,6 +196,14 @@ JSON Merge Patch 的核心思想是使用一个类似目标文档结构的 JSON 
 JSON Merge Patch 特别适合用于 RESTful API 的 PATCH 请求。HTTP PATCH 方法（RFC 5789）用于对资源进行部分更新，而 JSON Merge Patch 提供了一种简单的方式来表示这些更新。
 
 当使用 JSON Merge Patch 时，HTTP 请求应该使用 `Content-Type: application/merge-patch+json` 头。
+
+## 测试
+
+在 `go-json-tutorial/tutorial14` 目录下运行：
+
+```bash
+go test
+```
 
 ## 参考资料
 
