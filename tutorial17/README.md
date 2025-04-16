@@ -1,0 +1,423 @@
+# 从零开始的 JSON 库教程（十七）：安全性增强
+
+## 本章目标
+
+在前面的章节中，我们已经实现了许多功能，包括 JSON Path、Schema 验证、Patch 操作和命令行工具。本章将专注于**安全性增强**，确保我们的 JSON 库在处理各种输入时能够保持安全和稳定。
+
+主要目标：
+
+1. **防止 DoS（拒绝服务）攻击**：
+   - 实现输入大小限制
+   - 添加递归深度限制
+   - 限制字符串和数组的长度
+
+2. **安全的序列化/反序列化**：
+   - 防止数据注入攻击
+   - 处理特殊字符和转义序列
+   - 实现安全的类型转换
+
+3. **资源保护**：
+   - 内存使用限制
+   - 计算资源保护
+   - 错误弹性和恢复机制
+
+## 实现细节
+
+### 1. 解析选项增强
+
+在之前的章节中，我们已经引入了 `ParseOptions` 来配置解析行为。本章将扩展这个结构体，添加更多安全相关的选项：
+
+```go
+type ParseOptions struct {
+    // 已有选项
+    RecoverFromErrors bool    // 错误恢复
+    AllowComments     bool    // 允许注释
+    MaxDepth          int     // 最大嵌套深度
+    
+    // 新增安全选项
+    MaxStringLength   int     // 最大字符串长度
+    MaxArraySize      int     // 最大数组元素数量
+    MaxObjectSize     int     // 最大对象成员数量
+    MaxTotalSize      int     // 最大输入字节数
+    MaxNumberValue    float64 // 最大数字值
+    MinNumberValue    float64 // 最小数字值
+}
+```
+
+### 2. 安全检查实现
+
+我们将在解析过程中的关键点添加安全检查：
+
+- 在解析前检查输入总长度
+- 在解析字符串时检查长度
+- 在解析数组和对象时检查元素数量
+- 在解析数字时检查值范围
+- 在递归解析时检查嵌套深度
+
+### 3. 安全序列化
+
+我们将增强 `Stringify` 功能：
+
+- 添加自定义格式化选项
+- 实现特殊字符的安全转义
+- 添加序列化大小限制
+
+## 预期成果
+
+完成本章后，我们的 JSON 库将能够：
+
+1. 安全处理恶意构造的输入而不会崩溃
+2. 限制资源消耗，防止 DoS 攻击
+3. 提供详细的安全错误信息
+4. 允许用户根据需求配置安全限制
+
+## 测试
+
+在 `go-json-tutorial/tutorial17` 目录下运行测试：
+
+```bash
+go test ./
+```
+
+## 使用示例
+
+```go
+import "github.com/Cactusinhand/go-json-tutorial/tutorial17"
+
+func main() {
+    var v leptjson.Value
+    
+    // 使用安全选项解析
+    options := leptjson.ParseOptions{
+        MaxDepth: 32,         // 限制嵌套深度为32层
+        MaxStringLength: 8192, // 限制字符串最大长度为8KB
+        MaxArraySize: 1000,    // 限制数组最大元素数为1000
+        MaxObjectSize: 1000,   // 限制对象最大成员数为1000
+        MaxTotalSize: 1024*1024 // 限制输入总大小为1MB
+    }
+    
+    // 尝试解析一个可能恶意的输入
+    errCode := leptjson.ParseWithOptions(&v, potentiallyMaliciousInput, options)
+    if errCode != leptjson.PARSE_OK {
+        // 处理错误，可能是安全限制被触发
+    }
+}
+```
+
+## 命令行工具简介
+
+在本章中，我们为 `leptjson` 库添加了命令行工具功能，使用户能够通过简单的命令行操作来处理和分析 JSON 数据。这个命令行工具提供了多种实用功能，如 JSON 解析、格式化、最小化、统计分析、路径查询和文档比较，大大提高了处理 JSON 数据的效率。
+
+## 主要功能
+
+* **解析 (parse)**: 验证 JSON 文件的格式是否合法
+* **格式化 (format)**: 将 JSON 文件格式化，添加适当的缩进和换行，提高可读性
+* **最小化 (minify)**: 移除 JSON 文件中的所有不必要的空格，减小文件大小
+* **统计 (stats)**: 分析 JSON 文件，提供各种统计信息，如对象数量、数组数量、嵌套深度等
+* **查找 (find)**: 使用简化的路径表达式在 JSON 文件中查找特定数据
+* **JSONPath (path)**: 使用完整的 JSONPath 语法在 JSON 文件中查询数据，支持复杂查询和过滤条件
+* **比较 (compare)**: 比较两个 JSON 文件，查找它们之间的差异
+* **验证 (validate)**: 使用 JSON Schema 验证 JSON 文件的结构和内容
+* **指针操作 (pointer)**: 使用 JSON Pointer 定位和操作 JSON 文档中的值
+* **补丁应用 (patch)**: 使用 JSON Patch 对 JSON 文档应用一系列修改操作
+* **合并补丁 (merge-patch)**: 使用 JSON Merge Patch 简化的方式合并 JSON 文档
+
+## 使用方法
+
+使用格式: `leptjson [选项] 命令 [参数]`
+
+### 全局选项
+
+* **--help, -h**: 显示帮助信息
+* **--verbose, -v**: 显示详细输出
+* **--version**: 显示版本信息
+
+### 命令详解
+
+#### parse - 解析并验证 JSON 文件
+
+```bash
+leptjson parse data.json
+```
+
+此命令将验证 `data.json` 文件是否是有效的 JSON 格式。如果文件有格式错误，将显示详细的错误信息。
+
+#### format - 格式化 JSON 文件
+
+```bash
+leptjson format --indent=2 data.json formatted.json
+```
+
+将 `data.json` 格式化并保存为 `formatted.json`，使用 2 个空格作为缩进。如果不指定输出文件，将自动创建一个 `.formatted.json` 后缀的文件。
+
+#### minify - 最小化 JSON 文件
+
+```bash
+leptjson minify data.json data.min.json
+```
+
+移除 `data.json` 中的所有空白字符，创建一个紧凑的 `data.min.json` 文件。
+
+#### stats - 显示 JSON 统计信息
+
+```bash
+leptjson stats data.json
+```
+
+分析 `data.json` 文件并显示统计信息，包括：
+* 文件大小
+* 最大嵌套深度
+* 对象数量
+* 数组数量
+* 键总数和最长键
+* 字符串、数字、布尔值和 null 值的数量
+
+可以使用 `--json` 选项以 JSON 格式输出统计信息：
+
+```bash
+leptjson stats --json data.json
+```
+
+#### find - 查找 JSON 路径
+
+```bash
+leptjson find data.json "$.store.book[0].title"
+```
+
+使用 JSONPath 表达式 `$.store.book[0].title` 在 `data.json` 中查找匹配的值。
+
+可以使用 `--output` 选项指定输出格式：
+* `compact`: 紧凑 JSON（默认）
+* `pretty`: 格式化 JSON
+* `raw`: 对于简单值，仅输出值本身
+
+```bash
+leptjson find --output=pretty data.json "$.store.book[*]"
+```
+
+#### path - 使用 JSONPath 查询 JSON 数据
+
+```bash
+leptjson path [选项] 文件 JSONPATH表达式
+```
+
+使用完整的 JSONPath 语法从 JSON 文件中提取数据。相比 `find` 命令，`path` 命令支持更强大的查询功能。
+
+选项:
+- `--output=FORMAT`: 设置输出格式，可选值有 compact (紧凑), pretty (美化), raw (原始), table (表格)
+- `--all`: 显示所有匹配结果(默认只显示前10个)
+- `--csv=FILE`: 将结果保存为 CSV 文件
+- `--no-path`: 不在输出中显示路径信息
+
+支持的 JSONPath 语法:
+- `$`: 根对象
+- `.property`: 子属性访问
+- `['property']`: 带引号的属性访问
+- `[index]`: 数组索引访问
+- `[start:end:step]`: 数组切片
+- `*`: 通配符，匹配所有成员
+- `..property`: 递归下降，匹配任意深度的属性
+- `[?(@.prop > 10)]`: 过滤表达式
+- `[?(@.prop)]`: 存在性检查
+- `[?(@.name == 'value')]`: 相等性检查
+- `['a','b']`: 多属性选择
+
+示例:
+```bash
+# 查找所有书籍的作者
+leptjson path books.json "$.store.book[*].author"
+
+# 查询价格小于10的所有书籍
+leptjson path --output=table books.json "$..book[?(@.price < 10)]"
+
+# 查找所有价格并导出为CSV
+leptjson path --csv=prices.csv books.json "$..price"
+
+# 递归查找所有ID
+leptjson path users.json "$..id"
+```
+
+#### compare - 比较两个 JSON 文件
+
+```bash
+leptjson compare file1.json file2.json
+```
+
+比较 `file1.json` 和 `file2.json`，显示它们之间的所有差异，包括类型不匹配、值不同和缺失/额外的键。
+
+可以使用 `--json` 选项以 JSON 格式输出差异：
+
+```bash
+leptjson compare --json file1.json file2.json
+```
+
+#### validate - 使用 JSON Schema 验证 JSON 文件
+
+```bash
+leptjson validate schema.json data.json
+```
+
+使用 `schema.json` 中定义的 JSON Schema 验证 `data.json` 文件。如果验证失败，将显示详细的错误信息，包括验证失败的位置和原因。
+
+可以使用 `--format` 选项指定输出格式：
+* `text`: 人类可读的文本格式（默认）
+* `json`: 机器可读的 JSON 格式
+
+```bash
+leptjson validate --format=json schema.json data.json
+```
+
+#### pointer - 使用 JSON Pointer 操作 JSON 文件
+
+```bash
+leptjson pointer data.json "/users/0/name"
+```
+
+使用 JSON Pointer (RFC 6901) 查找 `data.json` 中位于路径 `/users/0/name` 的值。
+
+可以使用 `--operation` 选项指定操作类型：
+* `get`: 获取值（默认）
+* `add`: 添加或替换值
+* `remove`: 删除值
+* `replace`: 替换值
+
+对于 `add` 和 `replace` 操作，需要使用 `--value` 选项指定要设置的值：
+
+```bash
+leptjson pointer --operation=replace --value="John" data.json "/users/0/name"
+```
+
+对于修改操作，可以使用 `--output` 选项指定输出文件，默认会覆盖原文件：
+
+```bash
+leptjson pointer --operation=add --value="admin" --output=new.json data.json "/users/0/role"
+```
+
+#### patch - 使用 JSON Patch 应用修改
+
+```bash
+leptjson patch patch.json data.json output.json
+```
+
+将 `patch.json` 中定义的 JSON Patch 操作应用到 `data.json`，并将结果保存到 `output.json`。
+
+JSON Patch (RFC 6902) 支持以下操作：
+* `add`: 添加值
+* `remove`: 删除值
+* `replace`: 替换值
+* `move`: 移动值
+* `copy`: 复制值
+* `test`: 测试值是否匹配
+
+可以使用 `--test` 选项仅测试补丁是否可以应用，而不实际修改文件：
+
+```bash
+leptjson patch --test patch.json data.json
+```
+
+使用 `--in-place` 选项直接修改原文件，而不是创建新文件：
+
+```bash
+leptjson patch --in-place patch.json data.json
+```
+
+#### merge-patch - 使用 JSON Merge Patch 合并文档
+
+```bash
+leptjson merge-patch patch.json data.json output.json
+```
+
+将 `patch.json` 中定义的 JSON Merge Patch 应用到 `data.json`，并将结果保存到 `output.json`。
+
+JSON Merge Patch (RFC 7396) 是一种比 JSON Patch 更简单的 JSON 文档合并方式，其主要规则：
+* 如果补丁中的值为 null，则从目标中删除该字段
+* 如果补丁中的值不为 null，则替换目标中的对应字段
+* 如果两边都是对象，则递归合并
+* 对于数组，直接替换而不是合并
+
+使用 `--in-place` 选项直接修改原文件，而不是创建新文件：
+
+```bash
+leptjson merge-patch --in-place changes.json data.json
+```
+
+## 使用示例
+
+### 解析并格式化 JSON 文件
+
+```bash
+# 验证 JSON 文件
+leptjson parse data.json
+
+# 格式化 JSON 文件
+leptjson format --indent=4 data.json pretty.json
+
+# 最小化 JSON 文件
+leptjson minify pretty.json data.min.json
+```
+
+### 分析和验证 JSON 文件
+
+```bash
+# 获取 JSON 统计信息
+leptjson stats data.json
+
+# 验证 JSON 是否符合 Schema
+leptjson validate user-schema.json user.json
+
+# 查找特定数据
+leptjson find data.json "$.users[?(@.age>30)].name"
+
+# 比较两个 JSON 文件
+leptjson compare original.json updated.json
+```
+
+### 修改 JSON 文件
+
+```bash
+# 使用 JSON Pointer 修改特定值
+leptjson pointer --operation=replace --value=true data.json "/user/active"
+
+# 使用 JSON Patch 应用多个修改
+leptjson patch updates.json data.json data-updated.json
+
+# 使用 JSON Merge Patch 合并文档
+leptjson merge-patch merge.json data.json data-merged.json
+```
+
+### 复杂查询示例
+
+```bash
+# 使用JSONPath查询所有价格小于10的书籍，以表格形式显示
+leptjson path --output=table library.json "$..book[?(@.price < 10)]"
+
+# 使用JSONPath递归查找所有作者并保存为CSV文件
+leptjson path --csv=authors.csv library.json "$..author"
+
+# 使用JSON Pointer访问特定路径
+leptjson pointer users.json "/users/0/name"
+```
+
+## 构建和安装
+
+在 `go-json-tutorial/tutorial17/main` 目录下构建命令行工具：
+
+```bash
+go build -o leptjson
+```
+
+或使用 `go install` 安装到系统路径：
+
+```bash
+go install
+```
+
+## 参考资料
+
+- [Go 标准库 flag 包文档](https://golang.org/pkg/flag/)
+- [JSONPath 语法规范](https://goessner.net/articles/JsonPath/)
+- [JSON 格式规范](https://www.json.org/)
+- [RFC 6901: JSON Pointer](https://tools.ietf.org/html/rfc6901)
+- [RFC 6902: JSON Patch](https://tools.ietf.org/html/rfc6902)
+- [JSON Schema 规范](https://json-schema.org/specification.html)
+- [RFC 7396: JSON Merge Patch](https://tools.ietf.org/html/rfc7396) 

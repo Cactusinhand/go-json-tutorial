@@ -1,0 +1,12 @@
+{
+    "name": "leptjson",
+    "version": 1.0,
+    "features": [
+      "parse",
+      "stringify",
+      {"stats": true, "depth": 3}
+    ],
+    "valid": true,
+    "invalid": false,
+    "nothing": null
+  }
